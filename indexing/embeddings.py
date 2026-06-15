@@ -101,28 +101,45 @@ def _embed_local(texts: list[str]) -> list[list[float]]:
     return [row.tolist() for row in vectors]
 
 
+# The active backend, pinned after the first embed of a run. Gemini (3072-d) and the
+# local model (384-d) live in different vector spaces, so once we commit to one every
+# later embed — including the retriever's per-query embeds — must use the same one, or
+# vector-store lookups silently mismatch. Reset between tests via the autouse fixture.
+_backend: str | None = None
+
+
 async def embed_texts(
     texts: list[str], *, api_key: str | None = None
 ) -> Result[list[list[float]], EmbedError]:
-    """Embed raw strings, returning one vector per input (Gemini → local fallback)."""
+    """Embed raw strings, returning one vector per input (Gemini → local fallback).
+
+    The backend is sticky: once a run falls back to local we never re-try Gemini, and
+    once Gemini has produced vectors we never silently drop to local (which would mix
+    dimensions) — a later Gemini failure surfaces as an error instead.
+    """
+    global _backend
     if not texts:
         return Ok([])
 
     key = api_key or os.environ.get("GEMINI_API_KEY")
 
-    if key:
+    if key and _backend != "local":
         try:
             vectors = await asyncio.to_thread(_embed_gemini, texts, key)
+            _backend = "gemini"
             console.log(f"[green]Embedded {len(texts)} texts via Gemini ({GEMINI_MODEL})[/]")
             return Ok(vectors)
-        except Exception as exc:  # quota, auth, network — fall back rather than fail
+        except Exception as exc:  # quota, auth, network
+            if _backend == "gemini":
+                return Err(EmbedError(reason=f"Gemini embedding failed mid-run: {exc}"))
             console.log(
                 f"[yellow]Gemini embedding failed ({exc}); "
-                f"falling back to local {LOCAL_MODEL}[/]"
+                f"falling back to local {LOCAL_MODEL} for the rest of this run[/]"
             )
 
     try:
         vectors = await asyncio.to_thread(_embed_local, texts)
+        _backend = "local"
         console.log(f"[cyan]Embedded {len(texts)} texts via local {LOCAL_MODEL}[/]")
         return Ok(vectors)
     except Exception as exc:

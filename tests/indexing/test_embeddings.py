@@ -6,8 +6,16 @@ from unittest.mock import patch
 import pytest
 
 from indexing import embeddings
-from indexing.embeddings import embed
+from indexing.embeddings import embed, embed_texts
 from ingestion.types import Chunk, RankedChunk
+
+
+@pytest.fixture(autouse=True)
+def _reset_backend():
+    # The pinned backend is module-global; reset it so tests don't pollute each other.
+    embeddings._backend = None
+    yield
+    embeddings._backend = None
 
 
 def _ranked(name: str, content: str = "def f(): pass", importance: float = 0.1) -> RankedChunk:
@@ -100,9 +108,7 @@ async def test_batching_250_chunks_makes_3_gemini_calls() -> None:
 
     with (
         patch("google.generativeai.configure"),
-        patch(
-            "google.generativeai.embed_content", side_effect=fake_embed_content
-        ) as mock_embed,
+        patch("google.generativeai.embed_content", side_effect=fake_embed_content) as mock_embed,
     ):
         result = await embed(chunks, api_key="fake-key")
 
@@ -124,3 +130,49 @@ def test_embed_text_includes_context_header() -> None:
     text = embeddings._embed_text(rc)
     assert text.startswith("# python | function verify")
     assert "return token" in text
+
+
+@pytest.mark.asyncio
+async def test_backend_is_sticky_after_local_fallback() -> None:
+    # First call quota-fails to local; the second must NOT touch Gemini again, so both
+    # batches share the local vector space (no 3072-d vs 384-d mismatch).
+    def boom(texts, api_key):  # noqa: ANN001
+        raise RuntimeError("429 quota exceeded")
+
+    def fake_local(texts):  # noqa: ANN001
+        return [[0.5, 0.5] for _ in texts]
+
+    with (
+        patch("indexing.embeddings._embed_gemini", side_effect=boom) as gem,
+        patch("indexing.embeddings._embed_local", side_effect=fake_local),
+    ):
+        first = await embed_texts(["a"], api_key="fake-key")
+        second = await embed_texts(["b"], api_key="fake-key")
+
+    assert first.is_ok() and second.is_ok()
+    assert embeddings._backend == "local"
+    gem.assert_called_once()  # only the first call tried Gemini; the second skipped it
+
+
+@pytest.mark.asyncio
+async def test_gemini_failure_after_commit_errors_not_mixes() -> None:
+    # Once Gemini has produced vectors, a later failure must error rather than silently
+    # fall back to local (which would mix embedding dimensions in the index).
+    calls = {"n": 0}
+
+    def flaky(texts, api_key):  # noqa: ANN001
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [[0.1] * 768 for _ in texts]
+        raise RuntimeError("429 quota exceeded")
+
+    with (
+        patch("indexing.embeddings._embed_gemini", side_effect=flaky),
+        patch("indexing.embeddings._embed_local", side_effect=AssertionError("must not run")),
+    ):
+        first = await embed_texts(["a"], api_key="fake-key")
+        second = await embed_texts(["b"], api_key="fake-key")
+
+    assert first.is_ok()
+    assert not second.is_ok()
+    assert "mid-run" in second.error.reason
