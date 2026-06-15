@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+from ingestion.filter import SKIP_DIRS
 from ingestion.types import (
     AuthError,
     Err,
@@ -140,8 +141,9 @@ def _resolve_local(source: str) -> Result[FetchedRepo, FetchError]:
 
 def _count_files(root: Path) -> int:
     count = 0
-    for _ in root.rglob("*"):
-        count += 1
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        count += len(filenames)
         if count > DEFAULT_FILE_LIMIT * 2:
             break
     return count

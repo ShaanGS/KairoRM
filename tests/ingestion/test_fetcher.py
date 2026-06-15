@@ -73,6 +73,20 @@ async def test_repo_too_large(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_skip_dirs_excluded_from_count(tmp_path: Path) -> None:
+    # A handful of real source files...
+    for i in range(3):
+        (tmp_path / f"f{i}.py").write_text("x\n")
+    # ...plus a bloated virtualenv that must not count toward the limit.
+    venv = tmp_path / ".venv"
+    venv.mkdir()
+    for i in range(50):
+        (venv / f"dep{i}.py").write_text("y\n")
+    result = await fetch(str(tmp_path), cache_dir=tmp_path / "_cache", file_limit=5)
+    assert result.is_ok()
+
+
+@pytest.mark.asyncio
 async def test_unrecognized_source(tmp_path: Path) -> None:
     result = await fetch("ftp://nope.example.com/x", cache_dir=tmp_path / "_cache")
     assert not result.is_ok()
