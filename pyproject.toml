@@ -1,0 +1,65 @@
+[project]
+name = "kairo-rm"
+version = "0.0.1"
+description = "Codebase onboarding agent — point it at any repo, get architecture docs and a Q&A interface."
+requires-python = ">=3.11"
+dependencies = [
+    "gitpython>=3.1.40",
+    "pathspec>=0.12.1",
+    "rich>=13.7.0",
+    "tree-sitter>=0.23.0",
+    "tree-sitter-language-pack>=0.7.0",
+    "tiktoken>=0.7.0",
+    "networkx>=3.2",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "google-generativeai>=0.8.0",
+    "sentence-transformers>=3.0",
+    "chromadb>=0.5",
+    "rank-bm25>=0.2.2",
+    "groq>=0.11",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "sse-starlette>=2.0",
+    "click>=8.1",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.5.0",
+]
+
+[project.scripts]
+kairo = "cli.main:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ingestion", "parsing", "indexing", "agents", "synthesis", "output", "cli"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    # The Gemini embedding SDK named in the spec (google-generativeai) is deprecated
+    # upstream; the warning is expected and not actionable here.
+    "ignore::FutureWarning:google.generativeai",
+    "ignore:.*google.generativeai.*:FutureWarning",
+    # Starlette's TestClient warns about httpx; not actionable for our usage.
+    "ignore:.*httpx.*:DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Generated at runtime: cloned repos + chroma db live here, not our source.
+extend-exclude = ["kairomap-output"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
