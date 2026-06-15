@@ -11,7 +11,9 @@ running locally.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import warnings
 from dataclasses import dataclass
 
 from rich.console import Console
@@ -22,8 +24,35 @@ GEMINI_MODEL = "models/text-embedding-004"
 GEMINI_BATCH_SIZE = 100
 LOCAL_MODEL = "all-MiniLM-L6-v2"
 
+# Quiet HuggingFace/tokenizers chatter before the local model ever loads.
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 # Output to stderr so embedding logs never pollute machine-readable stdout.
 console = Console(stderr=True)
+
+
+@contextlib.contextmanager
+def _silence_fd_stderr():
+    """Redirect file descriptor 2 to /dev/null for the duration of the block.
+
+    The HF Hub "unauthenticated requests" notice is printed straight to fd 2 by the
+    hf_xet Rust extension, so Python's `warnings`/`logging` can't intercept it. We
+    silence it only around the model load — exceptions still propagate, and this
+    works whether or not the model is already cached (unlike HF_HUB_OFFLINE).
+    """
+    import sys
+
+    sys.stderr.flush()
+    saved = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 2)
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(devnull)
+        os.close(saved)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +71,9 @@ def _embed_text(chunk: RankedChunk) -> str:
 
 
 def _embed_gemini(texts: list[str], api_key: str) -> list[list[float]]:
-    import google.generativeai as genai
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        import google.generativeai as genai
 
     genai.configure(api_key=api_key)
     out: list[list[float]] = []
@@ -61,7 +92,9 @@ def _embed_local(texts: list[str]) -> list[list[float]]:
 
     global _local_model
     if _local_model is None:
-        _local_model = SentenceTransformer(LOCAL_MODEL)
+        with warnings.catch_warnings(), _silence_fd_stderr():
+            warnings.simplefilter("ignore")
+            _local_model = SentenceTransformer(LOCAL_MODEL)
     vectors = _local_model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
     return [row.tolist() for row in vectors]
 

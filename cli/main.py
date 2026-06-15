@@ -11,25 +11,35 @@ the cycles actually flow through to the dependency agent.
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import os
-import threading
-from pathlib import Path
+import sys
 
-import click
-from dotenv import load_dotenv
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
+# Quiet grpc's noisy fork/poll warnings before any grpc-backed library loads.
+os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "false"
+# epoll1 is a Linux-only poll engine; forcing it on macOS makes grpc fail to
+# initialize ("No event engine could be initialized from epoll1") and hangs the
+# pipeline. Only set it where it's valid.
+if sys.platform.startswith("linux"):
+    os.environ.setdefault("GRPC_POLL_STRATEGY", "epoll1")
 
-from agents import orchestrator
-from cli.banner import print_banner
-from indexing import embeddings, vectorstore
-from ingestion import detector, fetcher
-from ingestion import filter as file_filter
-from output import exporter, qa_server, renderer
-from parsing import ast_parser, chunker, ranker
-from synthesis import compressor, synthesizer
+import asyncio  # noqa: E402
+import hashlib  # noqa: E402
+import threading  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import click  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
+from rich.console import Console  # noqa: E402
+from rich.progress import Progress, SpinnerColumn, TextColumn  # noqa: E402
+
+from agents import orchestrator  # noqa: E402
+from cli.banner import print_banner  # noqa: E402
+from indexing import embeddings, vectorstore  # noqa: E402
+from ingestion import detector, fetcher  # noqa: E402
+from ingestion import filter as file_filter  # noqa: E402
+from output import exporter, qa_server, renderer  # noqa: E402
+from parsing import ast_parser, chunker, ranker  # noqa: E402
+from synthesis import compressor, synthesizer  # noqa: E402
 
 console = Console(stderr=False)
 err_console = Console(stderr=True)
