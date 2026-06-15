@@ -168,6 +168,32 @@ async def test_all_real_modules_covered_even_when_llm_omits_them() -> None:
     assert by["indexing"] and by["agents"]  # omitted modules get a non-empty fallback
 
 
+def test_reading_order_entry_points_first_then_importance() -> None:
+    from ingestion.types import SynthesisEntryPoint, SynthesisModule
+
+    chunks = [
+        _chunk("ingestion/fetch.py", "fetch", 0.9),
+        _chunk("indexing/store.py", "store", 0.4),
+        _chunk("cli/main.py", "main", 0.2),
+    ]
+    modules = [
+        SynthesisModule(name="ingestion", path="ingestion", responsibility="fetches repos"),
+        SynthesisModule(name="cli", path="cli", responsibility="command line"),
+    ]
+    entry_points = [
+        SynthesisEntryPoint(name="main", file="cli/main.py", description="the CLI entry")
+    ]
+
+    order = synthesizer._reading_order(chunks, modules, entry_points)
+    paths = [s.path for s in order]
+    assert paths[0] == "cli/main.py"  # entry point leads, regardless of its importance
+    assert "ingestion/fetch.py" in paths  # then most call-graph-central
+    assert order[0].reason == "the CLI entry"  # entry-point reason from its description
+    # a non-entry file's reason falls back to its module's responsibility
+    fetch_step = next(s for s in order if s.path == "ingestion/fetch.py")
+    assert fetch_step.reason == "fetches repos"
+
+
 @pytest.mark.asyncio
 async def test_invalid_json_retries_once_then_succeeds() -> None:
     chunks = [_chunk("auth.py", "verify", 0.9)]

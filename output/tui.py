@@ -36,6 +36,13 @@ def build_map_markdown(result: SynthesisResult, stats: dict) -> str:
         "",
         result.architecture_summary or "_No architecture summary._",
         "",
+    ]
+    if result.reading_order:
+        lines.append("## ▶ Start here")
+        for i, step in enumerate(result.reading_order, 1):
+            lines.append(f"{i}. **`{step.path}`** — {step.reason}")
+        lines.append("")
+    lines += [
         "## Stats",
         f"- **{stats.get('files', '—')}** files · **{stats.get('chunks', '—')}** chunks",
         f"- languages: {lang_str}",

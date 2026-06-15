@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Generic, TypeVar
@@ -166,6 +166,14 @@ class SynthesisEntryPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class ReadingStep:
+    """One step in the 'start here' reading order: a file and why to read it."""
+
+    path: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class SynthesisResult:
     repo_id: str
     architecture_summary: str  # 3 sentences max
@@ -176,6 +184,9 @@ class SynthesisResult:
     contributor_quickstart: list[str]  # ordered steps, max 6
     complexity_score: int  # 1-10
     generated_at: datetime
+    # Deterministic "read these files in this order" guide (entry points first, then the
+    # most call-graph-central files). Defaulted so older constructions stay valid.
+    reading_order: list[ReadingStep] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)

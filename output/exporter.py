@@ -33,6 +33,12 @@ def _markdown(result: SynthesisResult, repo_name: str) -> str:
     lines += ["## Architecture", "", result.architecture_summary or "_No summary._", ""]
     lines += [f"**Complexity:** {result.complexity_score}/10", ""]
 
+    if result.reading_order:
+        lines += ["## Start Here", "", "New to this codebase? Read these files in order:", ""]
+        for i, step in enumerate(result.reading_order, 1):
+            lines.append(f"{i}. `{step.path}` — {step.reason}")
+        lines.append("")
+
     lines += ["## Modules", ""]
     if result.modules:
         lines += ["| Name | Path | Responsibility |", "| --- | --- | --- |"]

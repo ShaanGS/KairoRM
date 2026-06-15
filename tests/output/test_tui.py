@@ -5,7 +5,13 @@ from datetime import UTC, datetime
 import pytest
 from textual.widgets import Input
 
-from ingestion.types import CompressedContext, SynthesisEntryPoint, SynthesisModule, SynthesisResult
+from ingestion.types import (
+    CompressedContext,
+    ReadingStep,
+    SynthesisEntryPoint,
+    SynthesisModule,
+    SynthesisResult,
+)
 from output import qa
 from output.tui import KairoConsole, build_map_markdown
 
@@ -25,6 +31,7 @@ def _result() -> SynthesisResult:
         contributor_quickstart=["Clone the repo", "Run the tests"],
         complexity_score=6,
         generated_at=datetime(2026, 6, 15, tzinfo=UTC),
+        reading_order=[ReadingStep(path="cli/main.py", reason="the entry point")],
     )
 
 
@@ -40,6 +47,7 @@ def test_build_map_markdown_includes_everything() -> None:
     assert "a.py -> b.py" in md  # circular risk
     assert "Clone the repo" in md  # contributor step
     assert "6/10" in md  # complexity
+    assert "Start here" in md and "the entry point" in md  # reading-order guide
 
 
 def _app() -> KairoConsole:

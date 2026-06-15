@@ -24,6 +24,7 @@ from ingestion.types import (
     Err,
     Ok,
     RankedChunk,
+    ReadingStep,
     Result,
     SynthesisEntryPoint,
     SynthesisModule,
@@ -200,6 +201,45 @@ def _evidence_chunks(top_chunks: list[RankedChunk], limit: int) -> list[RankedCh
     return picked[:limit]
 
 
+def _reading_order(
+    top_chunks: list[RankedChunk],
+    modules: list[SynthesisModule],
+    entry_points: list[SynthesisEntryPoint],
+    limit: int = 6,
+) -> list[ReadingStep]:
+    """A 'start here' path: entry points first (where execution begins), then the most
+    call-graph-central files. Each reason reuses that file's module responsibility, so it
+    reads like a senior engineer saying 'read these, in this order' — fully grounded in
+    PageRank + the file tree, never the LLM's guess."""
+    root = _repo_root(top_chunks)
+    importance: dict[str, float] = {}
+    for rc in top_chunks:
+        p = _relpath(str(rc.chunk.file_path), root)
+        importance[p] = importance.get(p, 0.0) + rc.importance_score
+    resp_by_module = {m.name.lower(): m.responsibility for m in modules}
+
+    def reason_for(path: str, fallback: str) -> str:
+        mod, _ = _module_of(path, "")  # path is already repo-relative
+        return resp_by_module.get(mod.lower(), fallback)
+
+    steps: list[ReadingStep] = []
+    seen: set[str] = set()
+    for e in entry_points:
+        if e.file and e.file not in seen:
+            seen.add(e.file)
+            steps.append(
+                ReadingStep(path=e.file, reason=e.description or reason_for(e.file, "Entry point."))
+            )
+    for path, _score in sorted(importance.items(), key=lambda kv: kv[1], reverse=True):
+        if len(steps) >= limit:
+            break
+        if path in seen:
+            continue
+        seen.add(path)
+        steps.append(ReadingStep(path=path, reason=reason_for(path, "Central to the call graph.")))
+    return steps[:limit]
+
+
 def _merge_and_dedupe(
     outputs: AgentOutputs, top_chunks: list[RankedChunk], inventory: list[dict]
 ) -> str:
@@ -345,6 +385,7 @@ def _build_result(
     except (TypeError, ValueError):
         complexity = 5
     complexity = max(1, min(10, complexity))
+    reading_order = _reading_order(top_chunks, modules, entry_points)
 
     return SynthesisResult(
         repo_id=repo_id,
@@ -356,6 +397,7 @@ def _build_result(
         contributor_quickstart=[str(s) for s in (data.get("contributor_quickstart", []) or [])][:6],
         complexity_score=complexity,
         generated_at=datetime.now(UTC),
+        reading_order=reading_order,
     )
 
 
