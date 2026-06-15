@@ -25,6 +25,7 @@ if sys.platform.startswith("linux"):
 import asyncio  # noqa: E402
 import hashlib  # noqa: E402
 import threading  # noqa: E402
+from collections import Counter  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import click  # noqa: E402
@@ -150,13 +151,19 @@ async def main(source: str) -> None:
         compressed = compressor.compress(result)
         progress.update(task, completed=1, description="Synthesised the analysis")
 
+    # Stats for the report header: file count, indexed chunks, language breakdown.
+    lang_counts = Counter(sf.language for sf in source_files if sf.language != "unknown")
+    stats = {
+        "files": len(source_files),
+        "chunks": len(embedded),
+        "languages": dict(lang_counts.most_common()),
+    }
+
     # 7 — Render the report (printed after the live region closes, so tables are clean)
     renderer.render(result, repo_name=repo_name, compressed=compressed)
 
     # 8 — Export to disk
-    export_result = exporter.export(
-        result, compressed, output_dir=OUTPUT_DIR, repo_name=repo_name
-    )
+    export_result = exporter.export(result, compressed, output_dir=OUTPUT_DIR, repo_name=repo_name)
     if not export_result.is_ok():
         _fail(f"Export failed: {_describe(export_result.error)}")
     manifest = export_result.unwrap()
@@ -175,6 +182,8 @@ async def main(source: str) -> None:
             "repo_name": repo_name,
             "repo_id": repo_id,
             "db_path": DB_PATH,
+            "result": result,
+            "stats": stats,
         },
         daemon=True,
     )

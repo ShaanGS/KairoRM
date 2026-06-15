@@ -14,12 +14,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from rich.console import Console
 
 from agents.base import _complete_text
 from indexing import retriever
-from ingestion.types import CompressedContext, RankedChunk
+from ingestion.types import CompressedContext, RankedChunk, SynthesisResult
+from output.web_page import build_report_html
 
 console = Console(stderr=False)
 
@@ -60,8 +62,17 @@ def create_app(
     repo_name: str,
     repo_id: str | None = None,
     db_path: Path | None = None,
+    result: SynthesisResult | None = None,
+    stats: dict | None = None,
 ) -> FastAPI:
     app = FastAPI(title=f"KairoRM Q&A — {repo_name}")
+
+    if result is not None:
+        page = build_report_html(result, repo_name=repo_name, stats=stats or {})
+
+        @app.get("/", response_class=HTMLResponse)
+        async def report() -> str:
+            return page
 
     @app.post("/ask", response_model=AskResponse)
     async def ask(request: AskRequest) -> AskResponse:
@@ -93,13 +104,20 @@ def start(
     repo_name: str,
     repo_id: str | None = None,
     db_path: Path | None = None,
+    result: SynthesisResult | None = None,
+    stats: dict | None = None,
     port: int = 8000,
 ) -> None:
     """Build the app and serve it with uvicorn (blocks until interrupted)."""
     import uvicorn
 
     app = create_app(
-        compressed, repo_name=repo_name, repo_id=repo_id, db_path=db_path
+        compressed,
+        repo_name=repo_name,
+        repo_id=repo_id,
+        db_path=db_path,
+        result=result,
+        stats=stats,
     )
-    console.print(f"[bold cyan]KairoRM Q&A ready at[/] http://localhost:{port}")
+    console.print(f"[bold cyan]KairoRM report ready at[/] http://localhost:{port}")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
