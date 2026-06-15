@@ -108,3 +108,18 @@ def test_imports_and_calls_carry_through() -> None:
     [c] = chunk([u])
     assert c.imports == ("import os",)
     assert c.calls == ("bar", "baz")
+
+
+def test_chunk_ids_are_unique_even_on_collision() -> None:
+    # Two units that hash to the same id (same file/line/content) must still get
+    # distinct chunk ids, or ChromaDB rejects the whole batch.
+    from ingestion.types import CodeUnit
+    from parsing.chunker import chunk
+
+    u = CodeUnit(
+        file_path=Path("/r/a.py"), language="python", unit_type="function", name="f",
+        start_line=1, end_line=1, raw_source="x=1", imports=(), calls=(), parent=None,
+    )
+    chunks = chunk([u, u, u])  # identical units → would collide
+    ids = [c.chunk_id for c in chunks]
+    assert len(ids) == len(set(ids)) == 3

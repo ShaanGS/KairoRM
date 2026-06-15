@@ -10,6 +10,7 @@ so the model understands where the code lives without seeing the rest of the fil
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from functools import lru_cache
 
 import tiktoken
@@ -40,16 +41,17 @@ def _context_header(unit: CodeUnit) -> str:
     return f"# {unit.language} | {unit.unit_type} {unit.name}"
 
 
-def _chunk_id(unit: CodeUnit, start_line: int, content_prefix: str) -> str:
-    """Deterministic id: hash(file_path + start_line + first 64 chars of content).
+def _chunk_id(unit: CodeUnit, start_line: int, content: str) -> str:
+    """Deterministic id: hash(file_path + start_line + full content).
 
-    Including a content prefix lets oversize-unit splits get distinct ids without
-    needing line numbers to differ.
+    Hashing the full content (not just a prefix) keeps distinct chunks distinct even
+    when they start on the same line and share an opening — a 64-char prefix collided
+    on real repos and ChromaDB rejects the whole batch on a single duplicate id.
     """
     h = hashlib.sha256()
     h.update(str(unit.file_path).encode("utf-8"))
     h.update(f":{start_line}:".encode())
-    h.update(content_prefix.encode("utf-8")[:64])
+    h.update(content.encode("utf-8"))
     return h.hexdigest()[:32]
 
 
@@ -125,8 +127,30 @@ def _split_oversize(unit: CodeUnit) -> list[Chunk]:
     return chunks
 
 
+def _dedupe_ids(chunks: list[Chunk]) -> list[Chunk]:
+    """Guarantee globally-unique chunk ids before they reach the vector store.
+
+    Belt-and-suspenders over `_chunk_id`: two genuinely identical fragments (same file,
+    line, and content) still hash equal, and ChromaDB rejects the entire batch on any
+    duplicate id. Suffix collisions deterministically so a run never hard-fails on it.
+    """
+    seen: set[str] = set()
+    out: list[Chunk] = []
+    for c in chunks:
+        cid = c.chunk_id
+        if cid in seen:
+            i = 2
+            while f"{cid}-{i}" in seen:
+                i += 1
+            cid = f"{cid}-{i}"
+            c = replace(c, chunk_id=cid)
+        seen.add(cid)
+        out.append(c)
+    return out
+
+
 def chunk(units: list[CodeUnit]) -> list[Chunk]:
-    """Convert `CodeUnit`s into token-bounded `Chunk`s."""
+    """Convert `CodeUnit`s into token-bounded `Chunk`s with unique ids."""
     out: list[Chunk] = []
     for u in units:
         tokens = _token_count(u.raw_source)
@@ -134,4 +158,4 @@ def chunk(units: list[CodeUnit]) -> list[Chunk]:
             out.append(_make_chunk(u, u.raw_source, u.start_line, u.end_line))
         else:
             out.extend(_split_oversize(u))
-    return out
+    return _dedupe_ids(out)
