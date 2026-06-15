@@ -125,3 +125,47 @@ async def test_llm_backend_error_propagates_as_agent_error() -> None:
     assert not result.is_ok()
     assert isinstance(result.error, AgentError)
     assert "boom" in result.error.reason
+
+
+def test_rate_limit_wait_detects_429_and_caps() -> None:
+    # A 429/quota error yields a bounded wait; a non-rate-limit error yields None.
+    rate_err = Exception("429 You exceeded your current quota. Please retry in 27s.")
+    wait = base._rate_limit_wait(rate_err, attempt=0)
+    assert wait is not None
+    # Honoured hint (27s) is capped at RATE_LIMIT_MAX_WAIT, plus <=1.5s jitter.
+    assert wait <= base.RATE_LIMIT_MAX_WAIT + 1.5
+    assert base._rate_limit_wait(Exception("connection reset"), attempt=0) is None
+
+
+@pytest.mark.asyncio
+async def test_call_gemini_retries_on_429_then_succeeds() -> None:
+    # First call 429s, second succeeds — the retry loop must recover without raising.
+    calls = {"n": 0}
+
+    async def _gen(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise Exception("429 rate limit exceeded")
+
+        class _Resp:
+            text = '{"ok": true}'
+
+        return _Resp()
+
+    fake_model = type("M", (), {"generate_content_async": staticmethod(_gen)})()
+    fake_genai = type(
+        "G",
+        (),
+        {
+            "configure": staticmethod(lambda **k: None),
+            "GenerativeModel": staticmethod(lambda *a, **k: fake_model),
+        },
+    )()
+    with (
+        patch.dict("sys.modules", {"google.generativeai": fake_genai}),
+        patch.object(base.asyncio, "sleep", new=AsyncMock()),
+    ):
+        out = await base._call_gemini("sys", "msg", "key")
+
+    assert out == '{"ok": true}'
+    assert calls["n"] == 2

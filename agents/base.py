@@ -2,16 +2,18 @@
 
 Every specialist agent subclasses `BaseAgent`, sets a `name`, a retrieval `query`,
 and a `system_prompt`, and inherits one `run()` that: formats its retrieved chunks
-into a prompt, calls the LLM (Groq `llama-3.3-70b-versatile` → Gemini 2.5 Pro
-fallback), parses strict JSON (one retry with a reminder if the model rambles), and
-enforces a hard 30-second ceiling. Agents never throw across their boundary — every
-outcome is a `Result[dict, AgentError]`.
+into a prompt, calls the LLM (Groq `llama-3.3-70b-versatile` → Gemini Flash
+fallback), parses strict JSON (one retry with a reminder if the model rambles), retries the
+Gemini fallback with backoff on a 429, and enforces a per-agent time ceiling. Agents
+never throw across their boundary — every outcome is a `Result[dict, AgentError]`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import random
 import re
 from abc import ABC
 from dataclasses import dataclass
@@ -22,9 +24,14 @@ from rich.console import Console
 
 from ingestion.types import Err, Ok, RankedChunk, Result
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-2.5-pro"
-AGENT_TIMEOUT = 30.0  # seconds, per agent (patchable in tests)
+# Models are env-overridable so they can be swapped without code changes. The Gemini
+# default is a *flash* model: `gemini-2.5-pro` has a free-tier limit of 0 requests, so
+# it can never serve as the fallback — flash models have real free-tier quota.
+GROQ_MODEL = os.environ.get("KAIRO_GROQ_MODEL", "llama-3.3-70b-versatile")
+GEMINI_MODEL = os.environ.get("KAIRO_GEMINI_MODEL", "gemini-2.5-flash")
+AGENT_TIMEOUT = 60.0  # seconds, per agent (patchable in tests); allows one 429 backoff
+RATE_LIMIT_MAX_RETRIES = 2  # extra Gemini attempts on a 429 before giving up
+RATE_LIMIT_MAX_WAIT = 20.0  # cap on a single backoff wait, seconds
 MAX_CONTEXT_TOKENS = 9000  # hard cap on the chunks context sent to the LLM
 CONTEXT_ENCODING = "cl100k_base"
 
@@ -105,6 +112,21 @@ async def _call_groq(
     return resp.choices[0].message.content or ""
 
 
+def _rate_limit_wait(exc: Exception, attempt: int) -> float | None:
+    """Seconds to wait before retrying a 429, or None if `exc` is not a rate-limit error.
+
+    Honours an explicit "retry in Ns" hint from the API when present (capped), otherwise
+    backs off exponentially. Jitter is added so parallel agents don't retry in lockstep
+    and immediately re-trip the per-minute limit.
+    """
+    msg = str(exc).lower()
+    if not any(s in msg for s in ("429", "rate limit", "quota", "exceeded", "resource_exhausted")):
+        return None
+    hint = re.search(r"retry[^0-9]{0,16}(\d+(?:\.\d+)?)\s*s", msg)
+    base = float(hint.group(1)) if hint else 2.0 * (2**attempt)
+    return min(base, RATE_LIMIT_MAX_WAIT) + random.uniform(0, 1.5)
+
+
 async def _call_gemini(
     system_prompt: str, user_message: str, api_key: str, *, json_mode: bool = True
 ) -> str:
@@ -113,10 +135,19 @@ async def _call_gemini(
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=system_prompt)
     generation_config = {"response_mime_type": "application/json"} if json_mode else None
-    resp = await model.generate_content_async(
-        user_message, generation_config=generation_config
-    )
-    return resp.text or ""
+    attempt = 0
+    while True:
+        try:
+            resp = await model.generate_content_async(
+                user_message, generation_config=generation_config
+            )
+            return resp.text or ""
+        except Exception as exc:
+            wait = _rate_limit_wait(exc, attempt)
+            if wait is None or attempt >= RATE_LIMIT_MAX_RETRIES:
+                raise
+            await asyncio.sleep(wait)
+            attempt += 1
 
 
 async def _complete_text(
@@ -132,14 +163,14 @@ async def _complete_text(
         try:
             return Ok(await _call_groq(system_prompt, user_message, groq_key, json_mode=json_mode))
         except Exception as exc:  # quota, auth, network — fall through to Gemini
-            console.log(
-                f"[yellow]Groq failed for {agent_name} ({exc}); falling back to Gemini[/]"
-            )
+            console.log(f"[yellow]Groq failed for {agent_name} ({exc}); falling back to Gemini[/]")
 
     gemini_key = os.environ.get("GEMINI_API_KEY")
     if gemini_key:
         try:
-            return Ok(await _call_gemini(system_prompt, user_message, gemini_key, json_mode=json_mode))
+            return Ok(
+                await _call_gemini(system_prompt, user_message, gemini_key, json_mode=json_mode)
+            )
         except Exception as exc:
             return Err(AgentError(agent=agent_name, reason=f"Gemini call failed: {exc}"))
 
@@ -197,15 +228,9 @@ class BaseAgent(ABC):  # noqa: B024 — abstract via its class-attribute contrac
         )
 
     async def run(self, retriever_results: list[RankedChunk]) -> Result[dict, AgentError]:
-        import asyncio
-
-        user_message = _truncate_context(
-            self._format_context(retriever_results), self.name
-        )
+        user_message = _truncate_context(self._format_context(retriever_results), self.name)
         try:
-            result = await asyncio.wait_for(
-                self._call_llm(user_message), timeout=AGENT_TIMEOUT
-            )
+            result = await asyncio.wait_for(self._call_llm(user_message), timeout=AGENT_TIMEOUT)
         except TimeoutError:
             return Err(
                 AgentError(agent=self.name, reason=f"LLM call timed out after {AGENT_TIMEOUT}s")

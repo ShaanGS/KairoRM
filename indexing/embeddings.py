@@ -1,6 +1,6 @@
 """Chunk embedding with a free-tier-first, always-falls-back strategy.
 
-Primary backend is Gemini's `text-embedding-004` (free tier, batched in groups of
+Primary backend is Gemini's `gemini-embedding-001` (free tier, batched in groups of
 100). If the API key is missing or the call fails for any reason — quota, network,
 auth — we transparently fall back to a fully local `sentence-transformers` model so
 indexing never hard-fails on a missing credential. The active backend is announced
@@ -20,12 +20,14 @@ from rich.console import Console
 
 from ingestion.types import EmbeddedChunk, Err, Ok, RankedChunk, Result
 
-GEMINI_MODEL = "models/text-embedding-004"
+# `text-embedding-004` 404s on the v1beta endpoint for current keys; `gemini-embedding-001`
+# is the available free-tier embedding model. Env-overridable like the chat models.
+GEMINI_MODEL = os.environ.get("KAIRO_EMBED_MODEL", "models/gemini-embedding-001")
 GEMINI_BATCH_SIZE = 100
 LOCAL_MODEL = "all-MiniLM-L6-v2"
 
 # Quiet HuggingFace/tokenizers chatter before the local model ever loads.
-os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 # Output to stderr so embedding logs never pollute machine-readable stdout.
