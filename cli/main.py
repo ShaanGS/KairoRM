@@ -41,6 +41,7 @@ from ingestion import detector, fetcher  # noqa: E402
 from ingestion import filter as file_filter  # noqa: E402
 from ingestion.types import RepoTooLargeError  # noqa: E402
 from output import exporter, renderer, tui  # noqa: E402
+from output.theme import ACCENT, HIGHLIGHT, MUTED, TEXT  # noqa: E402
 from parsing import ast_parser, chunker, ranker  # noqa: E402
 from synthesis import compressor, synthesizer  # noqa: E402
 
@@ -110,7 +111,8 @@ class _PipelineExit(SystemExit):
 
 
 def _fail(message: str) -> None:
-    err_console.print(f"[bold red]✗ {message}[/]")
+    # On-palette: gold mark to draw the eye, cream message — never red, never a traceback.
+    err_console.print(f"[{HIGHLIGHT}]✗[/] [{TEXT}]{message}[/]")
     raise _PipelineExit(1)
 
 
@@ -127,8 +129,8 @@ async def main(source: str) -> None:
     # ✓) instead of animating forever — which is what made earlier stages appear to
     # repeat. No task is ever re-added.
     progress_columns = (
-        SpinnerColumn(finished_text="[green]✓[/]"),
-        TextColumn("[progress.description]{task.description}"),
+        SpinnerColumn(style=ACCENT, finished_text=f"[{ACCENT}]✓[/]"),
+        TextColumn("{task.description}", style=TEXT),
     )
     with Progress(*progress_columns, console=console, transient=False) as progress:
         # 1 — Fetch
@@ -143,14 +145,14 @@ async def main(source: str) -> None:
                 )
             _fail(f"Fetch failed: {_describe(err)}")
         repo = fetch_result.unwrap()
-        progress.update(task, completed=1, description=f"Fetched [cyan]{repo_name}[/]")
+        progress.update(task, completed=1, description=f"Fetched [{ACCENT}]{repo_name}[/]")
 
         # 2 — Filter + detect language
         task = progress.add_task("Filtering files…", total=1)
         raw_files = [rf async for rf in file_filter.walk(repo)]
         source_files = [detector.detect(rf) for rf in raw_files]
         progress.update(
-            task, completed=1, description=f"Filtered [cyan]{len(source_files)}[/] files"
+            task, completed=1, description=f"Filtered [{HIGHLIGHT}]{len(source_files)}[/] files"
         )
 
         # 3 — Parse + chunk + rank
@@ -167,7 +169,9 @@ async def main(source: str) -> None:
                 "Point it at a repo that contains code in a supported language."
             )
         rank_result = ranker.rank(chunks)
-        progress.update(task, completed=1, description=f"Parsed [cyan]{len(chunks)}[/] chunks")
+        progress.update(
+            task, completed=1, description=f"Parsed [{HIGHLIGHT}]{len(chunks)}[/] chunks"
+        )
 
         # 4 — Index (embed + persist)
         task = progress.add_task("Indexing…", total=1)
@@ -178,7 +182,9 @@ async def main(source: str) -> None:
         store_result = await vectorstore.store(embedded, repo_id=repo_id, db_path=DB_PATH)
         if not store_result.is_ok():
             _fail(f"Indexing failed: {_describe(store_result.error)}")
-        progress.update(task, completed=1, description=f"Indexed [cyan]{len(embedded)}[/] chunks")
+        progress.update(
+            task, completed=1, description=f"Indexed [{HIGHLIGHT}]{len(embedded)}[/] chunks"
+        )
 
         # 5 — Agents (cycles threaded through to the dependency agent)
         task = progress.add_task("Running agents…", total=1)
@@ -233,7 +239,7 @@ async def main(source: str) -> None:
         await app.run_async()
     else:
         renderer.render(result, repo_name=repo_name, compressed=compressed)
-    console.print(f"[green]✓ Exported to[/] {manifest.output_dir}")
+    console.print(f"[{ACCENT}]✓ Exported to[/] [{MUTED}]{manifest.output_dir}[/]")
 
 
 @click.group()
@@ -252,15 +258,15 @@ def map_cmd(source: str) -> None:
     load_dotenv(dotenv_path=Path.cwd() / ".env")
     if not os.environ.get("GROQ_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
         err_console.print(
-            "[bold red]⚠ No LLM key found. Set GROQ_API_KEY or GEMINI_API_KEY in your "
-            "environment or create a .env file in this directory.[/]"
+            f"[{HIGHLIGHT}]⚠[/] [{TEXT}]No LLM key found. Set GROQ_API_KEY or GEMINI_API_KEY "
+            f"in your environment or create a .env file in this directory.[/]"
         )
         raise SystemExit(1)
 
     try:
         asyncio.run(main(source))
     except _PipelineExit:
-        raise  # already reported in red; just exit 1
+        raise  # already reported on-screen; just exit 1
     except Exception as exc:  # never leak a traceback to the user
-        err_console.print(f"[bold red]✗ Unexpected error: {exc}[/]")
+        err_console.print(f"[{HIGHLIGHT}]✗[/] [{TEXT}]Unexpected error: {exc}[/]")
         raise SystemExit(1) from None

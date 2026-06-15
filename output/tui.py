@@ -19,6 +19,7 @@ from textual.widgets import Footer, Input, Markdown, Static
 
 from ingestion.types import CompressedContext, SynthesisResult
 from output import qa
+from output.theme import ACCENT, MUTED, TEXT
 
 _SUGGESTED = (
     "What does this project do?",
@@ -80,24 +81,29 @@ class KairoConsole(App):
     """The interactive console shown after a scan completes."""
 
     CSS = """
-    Screen { layers: base; }
+    Screen { background: #1A1A14; color: #E8E4D0; }
     #header {
         height: 3;
         padding: 1 2;
-        background: $boost;
-        color: $text;
-        border-bottom: solid $primary;
+        background: #222218;
+        border-bottom: solid #3D3D2E;
     }
     #body { height: 1fr; }
     #map {
         width: 40%;
         padding: 0 2;
-        border-right: solid $primary-darken-2;
+        border-right: solid #3D3D2E;
     }
     #chat { width: 1fr; padding: 0 2; }
-    .user-msg { margin: 1 0 0 0; color: $accent; text-style: bold; }
+    Markdown { background: #1A1A14; }
+    MarkdownH1, MarkdownH2, MarkdownH3 { color: #C4A96B; text-style: bold; background: #1A1A14; }
+    .user-msg { margin: 1 0 0 0; color: #7CB87A; text-style: bold; }
     .bot-msg { margin: 0 0 1 0; padding: 0 0 0 0; }
-    Input { dock: bottom; border: tall $primary-darken-2; }
+    #prompt-bar { dock: bottom; height: 3; background: #1A1A14; }
+    #prompt-label { width: 4; content-align: center middle; color: #7CB87A; text-style: bold; }
+    #prompt { width: 1fr; border: tall #3D3D2E; background: #1A1A14; color: #E8E4D0; }
+    #prompt > .input--placeholder { color: #7A7A5A; }
+    Footer { background: #222218; color: #7A7A5A; }
     """
 
     BINDINGS = [
@@ -128,17 +134,16 @@ class KairoConsole(App):
     def compose(self) -> ComposeResult:
         files = self._stats.get("files", "—")
         chunks = self._stats.get("chunks", "—")
-        # Explicit colours so the bar stays legible on the panel background (theme
-        # `dim`/default text can vanish against the lighter header surface).
-        sep = ("   ·   ", "#6b7785")
+        # Warm palette: cream brand, sage-green repo name, muted stats.
+        sep = ("   ·   ", MUTED)
         header = Text.assemble(
-            ("◆ KairoRM", "bold #e6edf3"),
+            ("◆ KairoRM", f"bold {TEXT}"),
             sep,
-            (self._repo_name, "bold #4ec9b0"),
+            (self._repo_name, f"bold {ACCENT}"),
             sep,
             (
                 f"{files} files · {chunks} chunks · complexity {self._result.complexity_score}/10",
-                "#aab4c0",
+                MUTED,
             ),
         )
         yield Static(header, id="header")
@@ -151,9 +156,11 @@ class KairoConsole(App):
                     "actual code.\n\nTry:\n" + "\n".join(f"- {q}" for q in _SUGGESTED)
                 )
                 yield Markdown(intro, classes="bot-msg")
-        yield Input(
-            placeholder="Ask about this codebase…  (Esc to focus, Ctrl+C to quit)", id="prompt"
-        )
+        with Horizontal(id="prompt-bar"):
+            yield Static("›", id="prompt-label")
+            yield Input(
+                placeholder="Ask about this codebase…  (Esc to focus, Ctrl+C to quit)", id="prompt"
+            )
         yield Footer()
 
     def on_mount(self) -> None:

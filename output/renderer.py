@@ -9,12 +9,13 @@ capture and assert on the markup.
 
 from __future__ import annotations
 
+from rich import box
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
 from ingestion.types import CompressedContext, SynthesisResult
+from output.theme import ACCENT, BORDER, HIGHLIGHT, MUTED, SURFACE, TEXT
 
 # stderr=False: the rendered report is the primary user-facing output.
 console = Console(stderr=False)
@@ -37,48 +38,102 @@ def render(
     compressed: CompressedContext | None = None,
 ) -> None:
     """Print the full analysis. `compressed` is optional and only drives the footer."""
-    color = _complexity_color(result.complexity_score)
+    color = _complexity_color(result.complexity_score)  # green/yellow/red — semantic
     generated = result.generated_at.strftime("%Y-%m-%d %H:%M UTC")
+    header_style = f"{HIGHLIGHT} on {SURFACE}"
     header = (
-        f"[bold cyan]{repo_name}[/]\n"
+        f"[bold {ACCENT}]{repo_name}[/]\n"
         f"complexity [{color}]{result.complexity_score}/10[/]   "
-        f"[dim]generated {generated}[/]"
+        f"[{MUTED}]generated {generated}[/]"
     )
-    console.print(Panel(header, title="KairoRM", border_style="cyan"))
+    console.print(
+        Panel(header, title=f"[{HIGHLIGHT}]KairoRM[/]", border_style=BORDER, box=box.ROUNDED)
+    )
+
+    if result.reading_order:
+        lines = [
+            f"[{ACCENT}]{i}. {step.path}[/]  [{MUTED}]{step.reason}[/]"
+            for i, step in enumerate(result.reading_order, 1)
+        ]
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title=f"[{HIGHLIGHT}]▶ Start Here[/]",
+                border_style=BORDER,
+                box=box.ROUNDED,
+            )
+        )
 
     console.print(
-        Panel(result.architecture_summary or "[dim]no summary[/]", title="Architecture")
+        Panel(
+            f"[{TEXT}]{result.architecture_summary or 'no summary'}[/]",
+            title=f"[{HIGHLIGHT}]Architecture[/]",
+            border_style=BORDER,
+            box=box.ROUNDED,
+        )
     )
 
-    modules_table = Table(title="Modules", expand=True)
-    modules_table.add_column("Name", style="bold")
-    modules_table.add_column("Path", style="cyan")
-    modules_table.add_column("Responsibility")
+    modules_table = Table(
+        title=f"[{HIGHLIGHT}]Modules[/]",
+        border_style=BORDER,
+        header_style=header_style,
+        box=box.ROUNDED,
+        expand=True,
+    )
+    modules_table.add_column("Name", style=f"bold {TEXT}")
+    modules_table.add_column("Path", style=HIGHLIGHT)
+    modules_table.add_column("Responsibility", style=TEXT)
     for module in result.modules[:MAX_MODULE_ROWS]:
         modules_table.add_row(module.name, module.path, module.responsibility)
     console.print(modules_table)
     if len(result.modules) > MAX_MODULE_ROWS:
         # highlight=False so rich doesn't style the count and split the text span.
         console.print(
-            f"[dim]...and {len(result.modules) - MAX_MODULE_ROWS} more[/]", highlight=False
+            f"[{MUTED}]...and {len(result.modules) - MAX_MODULE_ROWS} more[/]", highlight=False
         )
 
     if result.entry_points:
-        entry_table = Table(title="Entry Points", expand=True)
-        entry_table.add_column("Name", style="bold")
-        entry_table.add_column("File", style="cyan")
-        entry_table.add_column("Description")
+        entry_table = Table(
+            title=f"[{HIGHLIGHT}]Entry Points[/]",
+            border_style=BORDER,
+            header_style=header_style,
+            box=box.ROUNDED,
+            expand=True,
+        )
+        entry_table.add_column("Name", style=f"bold {TEXT}")
+        entry_table.add_column("File", style=HIGHLIGHT)
+        entry_table.add_column("Description", style=TEXT)
         for ep in result.entry_points:
             entry_table.add_row(ep.name, ep.file, ep.description)
         console.print(entry_table)
 
+    if result.key_dependencies:
+        deps = ", ".join(f"[{HIGHLIGHT}]{dep}[/]" for dep in result.key_dependencies)
+        console.print(
+            Panel(
+                deps,
+                title=f"[{HIGHLIGHT}]Key Dependencies[/]",
+                border_style=BORDER,
+                box=box.ROUNDED,
+            )
+        )
+
     if result.contributor_quickstart:
         steps = "\n".join(
-            f"{i}. {step}" for i, step in enumerate(result.contributor_quickstart, 1)
+            f"[{HIGHLIGHT}]{i}.[/] [{TEXT}]{step}[/]"
+            for i, step in enumerate(result.contributor_quickstart, 1)
         )
-        console.print(Panel(Markdown(steps), title="Contributor Quickstart"))
+        console.print(
+            Panel(
+                steps,
+                title=f"[{HIGHLIGHT}]Contributor Quickstart[/]",
+                border_style=BORDER,
+                box=box.ROUNDED,
+            )
+        )
 
     if result.circular_risks:
+        # Kept red: a genuine warning, and asserted by the renderer tests.
         console.print(
             Panel(
                 "\n".join(f"• {risk}" for risk in result.circular_risks),
@@ -89,7 +144,7 @@ def render(
         )
 
     if compressed is not None:
-        footer = f"[dim]Q&A context: {compressed.token_count} tokens[/]"
+        footer = f"[{MUTED}]Q&A context: {compressed.token_count} tokens[/]"
         if compressed.truncated:
-            footer += "  [yellow]⚠ context truncated to fit budget[/]"
+            footer += f"  [{HIGHLIGHT}]⚠ context truncated to fit budget[/]"
         console.print(footer)
