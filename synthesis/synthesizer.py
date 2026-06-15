@@ -38,9 +38,10 @@ console = Console(stderr=True)
 _SYSTEM_PROMPT = (
     "You are a senior staff engineer writing the canonical overview of a codebase. "
     "You are given four specialist reports (modules, architecture, dependencies, "
-    "contributor) and the most important code chunks as evidence. Synthesize them into "
-    "one coherent picture. Return ONLY a single valid JSON object — no preamble, no "
-    "markdown fences — matching exactly this schema:\n"
+    "contributor), an AUTHORITATIVE MODULE LIST derived from the real file tree, and the "
+    "most important code chunks as evidence. Synthesize them into one coherent picture. "
+    "Return ONLY a single valid JSON object — no preamble, no markdown fences — matching "
+    "exactly this schema:\n"
     "{"
     '"architecture_summary": str, '
     '"modules": [{"name": str, "path": str, "responsibility": str}], '
@@ -50,9 +51,18 @@ _SYSTEM_PROMPT = (
     '"contributor_quickstart": [str], '
     '"complexity_score": int'
     "}\n"
-    "Rules: `architecture_summary` is three sentences max. `contributor_quickstart` is "
-    "at most 6 ordered steps. `complexity_score` is an integer 1-10. Only reference file "
-    "paths that appear in the evidence chunks."
+    "Rules:\n"
+    "- `modules` MUST contain one entry for EVERY name in the authoritative module list, "
+    "using those exact names — do not invent, drop, or merge modules.\n"
+    "- Each `responsibility` must explain what the module DOES and how it connects to the "
+    "rest of the system — what it consumes, what it produces, or which modules it works "
+    "with. NEVER merely restate the name: 'handles parsing' for a module named 'parsing' "
+    "is forbidden. Be concrete and reference real symbols/files when useful. One or two "
+    "sentences.\n"
+    "- `architecture_summary` (3 sentences max) names the overall pattern and traces how "
+    "data flows end to end across the modules.\n"
+    "- `contributor_quickstart` is at most 6 ordered steps. `complexity_score` is an "
+    "integer 1-10. Only reference file paths that appear in the evidence chunks."
 )
 
 _JSON_REMINDER = (
@@ -66,7 +76,108 @@ class SynthesisError:
     reason: str
 
 
-def _merge_and_dedupe(outputs: AgentOutputs, top_chunks: list[RankedChunk]) -> str:
+def _module_of(path: str, repo_name: str) -> tuple[str, str]:
+    """Map a file path to its (module_name, module_path), repo-relative.
+
+    A file in a subdirectory belongs to its top-level directory (`ingestion/x.py` →
+    `ingestion`). A file at the repo root is its own module (`engine.py` → `engine`),
+    so flat repos still produce a module map.
+    """
+    rel = _normalize_path(path, repo_name)
+    segs = [s for s in rel.split("/") if s]
+    if len(segs) >= 2:
+        return segs[0], segs[0]
+    leaf = segs[-1] if segs else rel
+    return leaf.rsplit(".", 1)[0], leaf
+
+
+# Languages that are docs/config, not source. A root-level file in one of these is not
+# a "module" (otherwise README.md, pyproject.toml, Makefile pollute the module map).
+_NONCODE_LANGS = frozenset(
+    {
+        "markdown",
+        "toml",
+        "yaml",
+        "yml",
+        "json",
+        "ini",
+        "cfg",
+        "conf",
+        "unknown",
+        "make",
+        "makefile",
+        "dockerfile",
+        "text",
+        "plaintext",
+        "rst",
+        "csv",
+        "lock",
+        "env",
+    }
+)
+
+
+def _module_inventory(top_chunks: list[RankedChunk], repo_name: str) -> list[dict]:
+    """The authoritative module list, grounded in the real file tree.
+
+    Every module that actually has code is represented exactly once — this is what stops
+    real modules from silently vanishing when an agent's retrieval doesn't sample them.
+    A module is kept if it is a directory package or holds real source (so root-level
+    docs/config files like README.md don't masquerade as modules). Ordered by aggregate
+    importance so the most central modules appear first.
+    """
+    groups: dict[str, dict] = {}
+    for rc in top_chunks:
+        rel = _normalize_path(str(rc.chunk.file_path), repo_name)
+        name, mpath = _module_of(str(rc.chunk.file_path), repo_name)
+        is_dir = len([s for s in rel.split("/") if s]) >= 2
+        is_code = rc.chunk.language.lower() not in _NONCODE_LANGS
+        g = groups.setdefault(
+            name,
+            {"name": name, "path": mpath, "files": {}, "weight": 0.0, "dir": False, "code": False},
+        )
+        g["files"][Path(rel).name] = max(g["files"].get(Path(rel).name, 0.0), rc.importance_score)
+        g["weight"] += rc.importance_score
+        g["dir"] = g["dir"] or is_dir
+        g["code"] = g["code"] or is_code
+    inventory = []
+    for g in sorted(groups.values(), key=lambda x: x["weight"], reverse=True):
+        if not g["name"] or not (g["dir"] or g["code"]):
+            continue  # root-level doc/config file, or unnamed — not a module
+        key_files = [f for f, _ in sorted(g["files"].items(), key=lambda kv: kv[1], reverse=True)]
+        inventory.append({"name": g["name"], "path": g["path"], "key_files": key_files[:3]})
+    return inventory
+
+
+def _evidence_chunks(
+    top_chunks: list[RankedChunk], repo_name: str, limit: int
+) -> list[RankedChunk]:
+    """Pick evidence chunks that cover every module, then fill by importance.
+
+    Taking only the global top-N starves modules whose code never reaches the top, so
+    the LLM can't describe them. Seeding with the single most-important chunk per module
+    guarantees every module has grounding before the remaining slots go to raw importance.
+    """
+    by_importance = sorted(top_chunks, key=lambda rc: rc.importance_score, reverse=True)
+    picked: list[RankedChunk] = []
+    seen_modules: set[str] = set()
+    for rc in by_importance:
+        mod, _ = _module_of(str(rc.chunk.file_path), repo_name)
+        if mod not in seen_modules:
+            seen_modules.add(mod)
+            picked.append(rc)
+    picked_ids = {id(rc) for rc in picked}
+    for rc in by_importance:
+        if len(picked) >= limit:
+            break
+        if id(rc) not in picked_ids:
+            picked.append(rc)
+    return picked[:limit]
+
+
+def _merge_and_dedupe(
+    outputs: AgentOutputs, top_chunks: list[RankedChunk], inventory: list[dict], repo_name: str
+) -> str:
     """Build the labelled, deduplicated context string sent to the LLM."""
     sections: list[tuple[str, dict]] = []
     if outputs.modules is not None:
@@ -93,15 +204,17 @@ def _merge_and_dedupe(outputs: AgentOutputs, top_chunks: list[RankedChunk]) -> s
                 seen_values.add(stripped)
             parts.append(line)
 
-    parts.append("\n## Evidence — top code chunks by importance")
-    top = sorted(top_chunks, key=lambda rc: rc.importance_score, reverse=True)[
-        :EVIDENCE_CHUNK_LIMIT
-    ]
-    for rc in top:
+    parts.append("\n## Authoritative module list — describe EVERY one")
+    for inv in inventory:
+        files = ", ".join(inv["key_files"]) or "(no files)"
+        parts.append(f"- {inv['name']} ({inv['path']}/) — key files: {files}")
+
+    limit = max(EVIDENCE_CHUNK_LIMIT, len(inventory) + 6)
+    parts.append("\n## Evidence — representative code chunks (every module covered)")
+    for rc in _evidence_chunks(top_chunks, repo_name, limit):
         c = rc.chunk
         parts.append(
-            f"- {c.file_path} :: {c.unit_type} {c.name} "
-            f"(importance={rc.importance_score:.4f})"
+            f"- {c.file_path} :: {c.unit_type} {c.name} (importance={rc.importance_score:.4f})"
         )
     return "\n".join(parts)
 
@@ -161,25 +274,32 @@ def _is_grounded(path_str: str, full: set[str], names: set[str]) -> bool:
 
 
 def _build_result(
-    data: dict, top_chunks: list[RankedChunk], repo_id: str, repo_name: str | None
+    data: dict,
+    top_chunks: list[RankedChunk],
+    repo_id: str,
+    repo_name: str | None,
+    inventory: list[dict],
 ) -> SynthesisResult:
     full, names = _valid_paths(top_chunks)
     name = repo_name or ""
 
-    modules: list[SynthesisModule] = []
+    # Modules are grounded in the real file tree, not the LLM: every inventory module
+    # appears exactly once (no real module dropped, no fake module invented). The LLM
+    # only supplies the responsibility prose, matched back by module name.
+    llm_responsibility: dict[str, str] = {}
     for m in data.get("modules", []) or []:
-        path = str(m.get("path", ""))
-        # Ground against the raw (cache) path, but store the clean repo-relative form.
-        if _is_grounded(path, full, names):
-            modules.append(
-                SynthesisModule(
-                    name=str(m.get("name", "")),
-                    path=_normalize_path(path, name),
-                    responsibility=str(m.get("responsibility", "")),
-                )
-            )
-        else:
-            console.log(f"[yellow]Dropping hallucinated module path: {path!r}[/]")
+        nm = str(m.get("name", "")).strip().lower()
+        resp = str(m.get("responsibility", "")).strip()
+        if nm and resp:
+            llm_responsibility[nm] = resp
+
+    modules: list[SynthesisModule] = []
+    for inv in inventory:
+        resp = llm_responsibility.get(inv["name"].lower())
+        if not resp:
+            files = ", ".join(inv["key_files"])
+            resp = f"Contains {files}." if files else "Part of the codebase."
+        modules.append(SynthesisModule(name=inv["name"], path=inv["path"], responsibility=resp))
 
     entry_points: list[SynthesisEntryPoint] = []
     for e in data.get("entry_points", []) or []:
@@ -208,9 +328,7 @@ def _build_result(
         key_dependencies=[str(d) for d in (data.get("key_dependencies", []) or [])],
         circular_risks=[str(c) for c in (data.get("circular_risks", []) or [])],
         entry_points=entry_points,
-        contributor_quickstart=[
-            str(s) for s in (data.get("contributor_quickstart", []) or [])
-        ][:6],
+        contributor_quickstart=[str(s) for s in (data.get("contributor_quickstart", []) or [])][:6],
         complexity_score=complexity,
         generated_at=datetime.now(UTC),
     )
@@ -236,7 +354,8 @@ async def synthesize(
     ):
         return Err(SynthesisError(reason="all agents failed"))
 
-    user_message = _merge_and_dedupe(outputs, top_chunks)
+    inventory = _module_inventory(top_chunks, repo_name or "")
+    user_message = _merge_and_dedupe(outputs, top_chunks, inventory, repo_name or "")
 
     try:
         llm_result = await asyncio.wait_for(_call_llm(user_message), timeout=SYNTH_TIMEOUT)
@@ -246,4 +365,4 @@ async def synthesize(
     if not llm_result.is_ok():
         return Err(llm_result.error)
 
-    return Ok(_build_result(llm_result.unwrap(), top_chunks, repo_id, repo_name))
+    return Ok(_build_result(llm_result.unwrap(), top_chunks, repo_id, repo_name, inventory))

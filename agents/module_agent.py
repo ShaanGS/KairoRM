@@ -10,8 +10,12 @@ _SYSTEM_PROMPT = (
     "JSON object — no preamble, no markdown fences — matching exactly this schema:\n"
     '{"modules": [{"name": str, "path": str, "responsibility": str, '
     '"key_files": [str], "exports": [str]}]}\n'
-    "Rules: one entry per top-level directory; `responsibility` is one sentence max; "
-    "`key_files` lists at most 3 files; `exports` lists the main public symbols."
+    "Rules: one entry per top-level directory. `responsibility` (1-2 sentences) must "
+    "explain what the module does and how it connects to the rest of the system — what it "
+    "consumes, what it produces, or which modules it collaborates with. NEVER just restate "
+    "the name ('handles parsing' for a 'parsing' module is forbidden); be concrete and "
+    "cite real symbols. `key_files` lists at most 3 files; `exports` lists the main public "
+    "symbols."
 )
 
 

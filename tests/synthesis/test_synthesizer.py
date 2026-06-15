@@ -55,14 +55,14 @@ def _full_llm_json(modules=None, entry_points=None) -> str:
     return json.dumps(
         {
             "architecture_summary": "A small auth library. It hashes and verifies. Clean.",
-            "modules": modules if modules is not None else [
-                {"name": "auth", "path": "auth.py", "responsibility": "auth logic"}
-            ],
+            "modules": modules
+            if modules is not None
+            else [{"name": "auth", "path": "auth.py", "responsibility": "auth logic"}],
             "key_dependencies": ["db"],
             "circular_risks": [],
-            "entry_points": entry_points if entry_points is not None else [
-                {"name": "verify", "file": "auth.py", "description": "entry"}
-            ],
+            "entry_points": entry_points
+            if entry_points is not None
+            else [{"name": "verify", "file": "auth.py", "description": "entry"}],
             "contributor_quickstart": ["pip install -e .", "pytest"],
             "complexity_score": 4,
         }
@@ -72,7 +72,9 @@ def _full_llm_json(modules=None, entry_points=None) -> str:
 @pytest.mark.asyncio
 async def test_all_outputs_populated_returns_full_result() -> None:
     chunks = [_chunk("auth.py", "verify", 0.9)]
-    with patch.object(synthesizer, "_complete_text", new=AsyncMock(side_effect=[Ok(_full_llm_json())])):
+    with patch.object(
+        synthesizer, "_complete_text", new=AsyncMock(side_effect=[Ok(_full_llm_json())])
+    ):
         result = await synthesize(_outputs(), chunks, repo_id=REPO_ID)
 
     assert result.is_ok()
@@ -91,7 +93,9 @@ async def test_all_outputs_populated_returns_full_result() -> None:
 async def test_partial_inputs_two_none_still_synthesizes() -> None:
     chunks = [_chunk("auth.py", "verify", 0.9)]
     outputs = _outputs(modules=None, arch=None)  # only deps + contributor present
-    with patch.object(synthesizer, "_complete_text", new=AsyncMock(side_effect=[Ok(_full_llm_json())])):
+    with patch.object(
+        synthesizer, "_complete_text", new=AsyncMock(side_effect=[Ok(_full_llm_json())])
+    ):
         result = await synthesize(outputs, chunks, repo_id=REPO_ID)
     assert result.is_ok()
     assert isinstance(result.unwrap(), SynthesisResult)
@@ -133,6 +137,35 @@ async def test_hallucinated_paths_are_removed() -> None:
     assert "auth.py" in module_paths
     assert "nowhere.py" not in entry_files
     assert "auth.py" in entry_files
+
+
+@pytest.mark.asyncio
+async def test_all_real_modules_covered_even_when_llm_omits_them() -> None:
+    # Chunks span three real top-level dirs; the LLM only describes one and invents a
+    # fake one. The result must contain every real module and no fabricated one.
+    chunks = [
+        _chunk("ingestion/fetch.py", "fetch", 0.9),
+        _chunk("indexing/store.py", "store", 0.5),
+        _chunk("agents/run.py", "run", 0.3),
+    ]
+    llm = _full_llm_json(
+        modules=[
+            {
+                "name": "ingestion",
+                "path": "ingestion",
+                "responsibility": "clones and filters repos",
+            },
+            {"name": "ghost", "path": "ghost", "responsibility": "not real"},
+        ]
+    )
+    with patch.object(synthesizer, "_complete_text", new=AsyncMock(side_effect=[Ok(llm)])):
+        result = await synthesize(_outputs(), chunks, repo_id=REPO_ID)
+
+    res = result.unwrap()
+    by = {m.name: m.responsibility for m in res.modules}
+    assert set(by) == {"ingestion", "indexing", "agents"}  # all real dirs, no "ghost"
+    assert by["ingestion"] == "clones and filters repos"  # LLM prose kept
+    assert by["indexing"] and by["agents"]  # omitted modules get a non-empty fallback
 
 
 @pytest.mark.asyncio
