@@ -21,7 +21,10 @@ from ingestion.types import (
     Result,
 )
 
-DEFAULT_FILE_LIMIT = 5000
+# A guardrail, not a hard product ceiling: free-tier LLM/embedding quotas are the real
+# limit on large repos. Raised from the original 5000 so realistic repos pass, and
+# overridable for the rare giant monorepo.
+DEFAULT_FILE_LIMIT = int(os.environ.get("KAIRO_FILE_LIMIT", "15000"))
 
 _GITHUB_HTTPS = re.compile(r"^https?://github\.com/([^/]+)/([^/.]+)(?:\.git)?/?$")
 _GITHUB_SSH = re.compile(r"^git@github\.com:([^/]+)/([^/.]+)(?:\.git)?$")

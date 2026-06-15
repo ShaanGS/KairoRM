@@ -2,26 +2,31 @@
 
 # KairoRM
 
-**A code intelligence engine that builds a living map of any codebase.**
+**A code intelligence engine that turns any repo into an interactive map you can talk to.**
 
 ![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)
-![Tests: 104 passing](https://img.shields.io/badge/tests-104%20passing-00D4AA?style=flat-square)
+![Tests: 112 passing](https://img.shields.io/badge/tests-112%20passing-00D4AA?style=flat-square)
 ![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230?style=flat-square)
-
-<!-- demo GIF — record with vhs or terminalizer, drop in docs/demo.gif -->
-<!-- <img src="docs/demo.gif" alt="KairoRM demo" width="800"> -->
 
 </div>
 
-Point KairoRM at any GitHub repo and it returns a full architecture breakdown, module guide, contributor onboarding doc, and a live Q&A interface. Unlike RAG-based repo chatbots, KairoRM builds an actual call graph, ranks every code chunk by PageRank importance, and routes specialist agents only what they need. The result is grounded, accurate intelligence — not hallucinated summaries.
+Point KairoRM at a GitHub repo or a local path. It parses the code into an AST, builds a
+real **call graph**, ranks every chunk by **PageRank** importance, and dispatches four
+specialist agents in parallel to produce an architecture breakdown, module guide, and
+contributor onboarding. Then it drops you into a **keyboard-driven terminal console** —
+a navigable codebase map beside a streaming Q&A chat. No browser, no leaving the terminal.
 
-## Table of Contents
+What makes the output trustworthy: the **module list comes from the real file tree** and
+**circular dependencies come from the actual call graph** — not from the language model.
+The LLM writes prose; the structure is grounded in the code.
+
+## Table of contents
 
 - [How it works](#how-it-works)
 - [Quickstart](#quickstart)
-- [Output](#output)
-- [LLM Backends](#llm-backends)
+- [The console](#the-console)
+- [LLM backends & cost](#llm-backends--cost)
 - [Architecture](#architecture)
 - [Development](#development)
 
@@ -29,144 +34,111 @@ Point KairoRM at any GitHub repo and it returns a full architecture breakdown, m
 
 ```mermaid
 graph TD
-    A[GitHub URL / Local Path / ZIP] --> B[Ingestion — fetch · filter · detect]
-    B --> C[AST Parsing — tree-sitter · 400-token chunks]
+    A[GitHub URL / Local path / ZIP] --> B[Ingestion — fetch · filter · detect]
+    B --> C[AST parsing — tree-sitter · 400-token chunks]
     C --> D[PageRank — call graph · importance scores]
-    D --> E[Hybrid Index — embeddings · BM25 · ChromaDB]
-    E --> F[Parallel Agents — module · arch · deps · contributor]
-    F --> G[Synthesis — merge · deduplicate · ground]
-    G --> H[Output — terminal · markdown · Q&A server]
+    D --> E[Hybrid index — embeddings · BM25 · ChromaDB]
+    E --> F[Parallel agents — module · arch · deps · contributor]
+    F --> G[Synthesis — merge · ground in the file tree · compress]
+    G --> H[Interactive TUI — map + streaming Q&A]
     style F fill:#00D4AA,color:#000
+    style H fill:#00D4AA,color:#000
 ```
 
-The key difference from naive RAG: PageRank-ranked chunks mean agents see the most important code first, not just the most semantically similar.
+The difference from a naive RAG chatbot: PageRank-ranked chunks mean the agents see the
+most *important* code first, not just the most semantically similar — and the final map
+is reconciled against the real directory structure so no module is ever dropped or invented.
 
 ## Quickstart
 
-```bash
-# install
-pip install kairo-rm
+KairoRM isn't on PyPI yet — install from source (it's a small, self-contained Python tool):
 
-# add your LLM key (Groq is free at console.groq.com)
+```bash
+git clone https://github.com/ShaanGS/KairoRM.git
+cd KairoRM
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+
+# add an LLM key — Groq is free at console.groq.com
 echo "GROQ_API_KEY=your_key_here" > .env
 
-# run on any repo
+# analyse a repo and open the console
 kairo map https://github.com/karpathy/micrograd
 ```
 
-### Ask questions
+Or use the Makefile (no venv activation needed):
 
 ```bash
-curl -X POST http://localhost:8000/ask \
-  -H "Content-Type: application/json" \
-  -d '{"question": "how does backpropagation work in this codebase"}'
+make run SRC=https://github.com/karpathy/micrograd
+make run                 # analyse the current directory
 ```
 
-<details>
-<summary>Response from the live server</summary>
+`kairo map` accepts a GitHub URL, a local path, or a `.zip`.
 
-Backpropagation in this codebase works as follows:
+## The console
 
-1. **Building the computation graph**: When you perform operations on `Value` objects, a computation graph is dynamically built. Each `Value` object represents a node in the graph, and its `_prev` attribute stores the previous nodes that were used to compute its value.
+When the scan finishes, KairoRM opens an interactive terminal console:
 
-2. **Topological ordering**: When `backward` is called on a `Value` object, the graph is topologically ordered using a depth-first search (DFS) approach. This is done in the `build_topo` function, which traverses the graph and stores the nodes in a list `topo`.
+- **Map pane** — architecture summary, modules and what each does, entry points,
+  dependencies, and any circular-dependency warnings, all scrollable.
+- **Chat pane** — ask anything about the codebase; answers **stream in token by token**,
+  grounded in the actual retrieved code, with a count of the chunks used.
+- **Keyboard-driven** — `Esc` to focus the prompt, `Ctrl+C` to quit.
 
-3. **Applying the chain rule**: Once the graph is ordered, the `backward` method applies the chain rule to compute the gradients of each node. It starts from the output node and iterates backwards through the graph, calling the `_backward` method of each node. The `_backward` method updates the gradient of the current node based on the gradients of its children.
-
-4. **Updating gradients**: The `_backward` method of each node updates its gradient based on the gradients of its children. For example, in the `__add__` method, the `_backward` method updates the gradients of the two input nodes by adding the gradient of the output node to their gradients.
-
-Here's a simplified example of how backpropagation works in this codebase:
-
-```python
-a = Value(2.0)
-b = Value(3.0)
-c = a + b
-
-# Build the computation graph:
-# c <- a, b
-
-c.backward()
-
-# Topological ordering:
-# [c, a, b]
-
-# Apply the chain rule:
-# c.grad = 1 (initial gradient)
-# a.grad += c.grad
-# b.grad += c.grad
-
-print(a.grad)  # prints 1.0
-print(b.grad)  # prints 1.0
-```
-
-In this example, the computation graph is built when we perform the addition operation `a + b`. When we call `backward` on `c`, the graph is topologically ordered, and the chain rule is applied to compute the gradients of `a` and `b`. The gradients of `a` and `b` are updated based on the gradient of `c`, which is initially set to 1.0.
-
-</details>
-
-## Output
-
-Every run writes three files to `kairomap-output/<repo-name>/`:
+Every run also writes three files to `kairomap-output/<repo>/`:
 
 | File | Contains |
 | --- | --- |
-| `architecture.md` | Full human-readable analysis — modules, entry points, architecture, contributor guide |
-| `kairomap.json` | Structured JSON for programmatic use |
+| `architecture.md` | Full human-readable analysis |
+| `kairomap.json` | Structured analysis for programmatic use |
 | `context.txt` | Compressed context, pipeable into other tools or LLMs |
 
-A live Q&A server starts at `http://localhost:8000` — ask anything about the codebase.
+(When stdout isn't a TTY — piped or in CI — it prints a static report instead of the TUI.)
 
-## LLM Backends
+## LLM backends & cost
 
-| Backend | Set up | Used for | Cost |
+| Backend | Setup | Used for | Cost |
 | --- | --- | --- | --- |
-| Groq (llama-3.3-70b-versatile) | `GROQ_API_KEY` in `.env` | Agents, synthesis, Q&A | Free tier |
-| Gemini 2.5 Pro | `GEMINI_API_KEY` in `.env` | Fallback for all LLM calls | Free tier |
-| sentence-transformers (MiniLM) | Automatic | Embeddings only | Always free, fully local |
+| Groq (`llama-3.3-70b-versatile`) | `GROQ_API_KEY` in `.env` | Agents, synthesis, Q&A | Free tier |
+| Gemini (`gemini-2.5-flash`) | `GEMINI_API_KEY` in `.env` | Fallback for all LLM calls | Free tier |
+| Gemini embeddings (`gemini-embedding-001`) → MiniLM | automatic | Chunk embeddings | Free / local |
 
-Groq alone is enough. Gemini is the fallback. Embeddings always run locally.
+One key is enough; the second is a fallback. Models are overridable via
+`KAIRO_GROQ_MODEL`, `KAIRO_GEMINI_MODEL`, and `KAIRO_EMBED_MODEL`.
+
+> **Heads-up on free tiers.** Free Groq/Gemini accounts have per-minute and per-day
+> limits. KairoRM retries rate-limited calls with backoff and falls back across
+> providers, but a very large repo (or many runs in a day) can still exhaust a free
+> quota. For heavy use, a paid key is smoother.
 
 ## Architecture
 
 Six layers, each with a single responsibility:
 
 ```
-kairoRM/
-├── ingestion/      # repo fetch, file filter (.gitignore + binary), language detect
-├── parsing/        # tree-sitter AST, 400-token semantic chunks, PageRank on call graph
-├── indexing/       # Gemini/MiniLM embeddings, ChromaDB, BM25+semantic hybrid retrieval
-├── agents/         # four specialist agents via asyncio.gather (parallel, not sequential)
-├── synthesis/      # merge agent outputs, deduplicate, grounding check, compress
-└── output/         # rich terminal renderer, markdown/JSON export, FastAPI Q&A server
+KairoRM/
+├── ingestion/   # repo fetch, file filter (.gitignore + binary), language detect
+├── parsing/     # tree-sitter AST, 400-token semantic chunks, PageRank on the call graph
+├── indexing/    # Gemini/MiniLM embeddings, ChromaDB, BM25 + semantic hybrid retrieval
+├── agents/      # four specialist agents via asyncio.gather (parallel), streaming dispatch
+├── synthesis/   # merge agent outputs, ground in the file tree, compress
+└── output/      # rich renderer, markdown/JSON export, interactive Textual TUI
 ```
+
+Design notes: agents never receive the full codebase (only their retrieved chunks);
+every LLM call has a provider fallback; agent outputs are `Result`-typed so one flaky
+call never sinks the run; and hallucination-prone fields (modules, circular deps,
+hotspots) are filled deterministically from the graph, not the model.
 
 ## Development
 
 ```bash
-git clone https://github.com/yourusername/kairo-rm
-cd kairo-rm
-python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# run tests
-pytest
-
-# lint
-ruff check .
+make test     # run the suite (112 tests, all API/network calls mocked)
+make lint     # ruff check
+make fmt      # ruff format
 ```
-
-104 tests, zero external API calls in test suite — all LLM and network calls are mocked.
-
-## Recording a demo GIF
-
-```bash
-# install vhs (charmbracelet.github.io/vhs)
-brew install vhs
-
-# record
-vhs docs/demo.tape
-```
-
-Drop the output GIF into `docs/demo.gif` and uncomment the image tag in the header.
 
 ## License
 

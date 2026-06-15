@@ -37,6 +37,7 @@ from cli.banner import print_banner  # noqa: E402
 from indexing import embeddings, vectorstore  # noqa: E402
 from ingestion import detector, fetcher  # noqa: E402
 from ingestion import filter as file_filter  # noqa: E402
+from ingestion.types import RepoTooLargeError  # noqa: E402
 from output import exporter, renderer, tui  # noqa: E402
 from parsing import ast_parser, chunker, ranker  # noqa: E402
 from synthesis import compressor, synthesizer  # noqa: E402
@@ -97,7 +98,13 @@ async def main(source: str) -> None:
         task = progress.add_task("Fetching repo…", total=1)
         fetch_result = await fetcher.fetch(source, cache_dir=CACHE_DIR)
         if not fetch_result.is_ok():
-            _fail(f"Fetch failed: {_describe(fetch_result.error)}")
+            err = fetch_result.error
+            if isinstance(err, RepoTooLargeError):
+                _fail(
+                    f"Repo too large: {err.file_count} files (limit {err.limit}). "
+                    "Raise it with KAIRO_FILE_LIMIT=<n>, or point KairoRM at a subdirectory."
+                )
+            _fail(f"Fetch failed: {_describe(err)}")
         repo = fetch_result.unwrap()
         progress.update(task, completed=1, description=f"Fetched [cyan]{repo_name}[/]")
 
@@ -117,6 +124,11 @@ async def main(source: str) -> None:
             if parsed.is_ok():
                 units.extend(parsed.unwrap())
         chunks = chunker.chunk(units)
+        if not chunks:
+            _fail(
+                "No source code found to analyse — KairoRM couldn't parse any files here. "
+                "Point it at a repo that contains code in a supported language."
+            )
         rank_result = ranker.rank(chunks)
         progress.update(task, completed=1, description=f"Parsed [cyan]{len(chunks)}[/] chunks")
 

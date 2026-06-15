@@ -218,6 +218,22 @@ async def test_non_tty_falls_back_to_static_render(monkeypatch, tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_empty_repo_exits_gracefully(monkeypatch, tmp_path: Path) -> None:
+    fx = _fixtures(tmp_path)
+    order: list[str] = []
+    buf = StringIO()
+    monkeypatch.setattr(cli_main, "err_console", Console(file=buf, force_terminal=False))
+    with _patch_pipeline(monkeypatch, fx, order):
+        monkeypatch.setattr(cli_main.chunker, "chunk", lambda units: [])  # nothing parseable
+        with pytest.raises(SystemExit) as exc_info:
+            await cli_main.main("https://github.com/x/y")
+    assert exc_info.value.code == 1
+    assert "No source code" in buf.getvalue()
+    # Stopped before indexing/agents — never burned an LLM call on an empty repo.
+    assert "run_all" not in order
+
+
+@pytest.mark.asyncio
 async def test_fetch_error_exits_code_1_without_traceback(monkeypatch, tmp_path: Path) -> None:
     fx = _fixtures(tmp_path)
     order: list[str] = []
