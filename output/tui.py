@@ -77,8 +77,9 @@ class KairoConsole(App):
     #header {
         height: 3;
         padding: 1 2;
-        background: $panel;
-        border-bottom: solid $primary-darken-2;
+        background: $boost;
+        color: $text;
+        border-bottom: solid $primary;
     }
     #body { height: 1fr; }
     #map {
@@ -120,14 +121,17 @@ class KairoConsole(App):
     def compose(self) -> ComposeResult:
         files = self._stats.get("files", "—")
         chunks = self._stats.get("chunks", "—")
+        # Explicit colours so the bar stays legible on the panel background (theme
+        # `dim`/default text can vanish against the lighter header surface).
+        sep = ("   ·   ", "#6b7785")
         header = Text.assemble(
-            ("KairoRM", "bold"),
-            ("  ·  ", "dim"),
-            (self._repo_name, "bold cyan"),
-            ("  ·  ", "dim"),
+            ("◆ KairoRM", "bold #e6edf3"),
+            sep,
+            (self._repo_name, "bold #4ec9b0"),
+            sep,
             (
                 f"{files} files · {chunks} chunks · complexity {self._result.complexity_score}/10",
-                "dim",
+                "#aab4c0",
             ),
         )
         yield Static(header, id="header")
