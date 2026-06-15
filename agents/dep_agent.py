@@ -1,8 +1,11 @@
 """Dependency agent: external packages, internal hotspots, circular risks.
 
-`internal_hotspots` is NOT trusted to the LLM — it is filled deterministically from
-the PageRank `importance_score` already attached to each chunk, so the most central
-files are reported with their true scores rather than a hallucinated ranking.
+Two fields are NOT trusted to the LLM — both are filled deterministically:
+- `internal_hotspots` comes from the PageRank `importance_score` on each chunk, so the
+  most central files are reported with their true scores, not a hallucinated ranking.
+- `circular_risks` comes from the real back-edges the ranker broke in the call graph.
+  Left to the LLM it invents textbook cycles like "auth -> db -> auth" for repos that
+  have no such modules, so its output for this field is discarded entirely.
 """
 
 from __future__ import annotations
@@ -21,7 +24,8 @@ _SYSTEM_PROMPT = (
     '"circular_risks": [str]}}\n'
     "Rules: `external` lists third-party packages and their purpose. Leave "
     "`internal_hotspots` as an empty list — it is filled from PageRank data, not by you. "
-    "`circular_risks` notes any modules that look mutually dependent."
+    "Leave `circular_risks` as an empty list too — it is filled from the call graph, not "
+    "by you. Do NOT guess circular dependencies."
 )
 
 _HOTSPOT_LIMIT = 5
@@ -33,24 +37,9 @@ class DepAgent(BaseAgent):
     system_prompt = _SYSTEM_PROMPT
 
     def __init__(self, cycles: list[tuple[str, str]] | None = None) -> None:
-        # Back-edges broken by the ranker (caller_chunk_id, callee_chunk_id). Passed
-        # in from RankResult.cycles so the agent can ground circular_risks instead of
-        # asking the LLM to guess them.
+        # Back-edges broken by the ranker as (file_path, file_path). Passed in from
+        # RankResult.cycles; these are the sole source of circular_risks (see below).
         self._cycles: list[tuple[str, str]] = cycles or []
-
-    def _format_context(self, chunks: list[RankedChunk]) -> str:
-        context = super()._format_context(chunks)
-        if not self._cycles:
-            return context
-        risk_lines = "\n".join(
-            f"- {Path(caller).name} -> {Path(callee).name}" for caller, callee in self._cycles
-        )
-        return (
-            f"{context}\n\n"
-            "## Known circular dependencies (detected in the call graph)\n"
-            "These back-edges were broken during ranking; report them as circular_risks:\n"
-            f"{risk_lines}"
-        )
 
     def _postprocess(self, data: dict, chunks: list[RankedChunk]) -> dict:
         # Override the LLM's internal_hotspots with the true PageRank ranking.
@@ -68,15 +57,14 @@ class DepAgent(BaseAgent):
             deps = {}
         deps["internal_hotspots"] = hotspots
         deps.setdefault("external", [])
-        deps.setdefault("circular_risks", [])
-        # Ground circular_risks in the actual broken back-edges, merging with anything
-        # the LLM surfaced (deduped, order-preserving).
-        if self._cycles:
-            grounded = [
-                f"{Path(caller).name} -> {Path(callee).name}" for caller, callee in self._cycles
-            ]
-            existing = deps["circular_risks"] if isinstance(deps["circular_risks"], list) else []
-            merged = list(dict.fromkeys([*existing, *grounded]))
-            deps["circular_risks"] = merged
+        # Ground circular_risks solely in the real broken back-edges, discarding whatever
+        # the LLM produced. Drop same-file self-loops (intra-file recursion is not a
+        # circular *dependency*) and dedupe, preserving order.
+        grounded = [
+            f"{Path(caller).name} -> {Path(callee).name}"
+            for caller, callee in self._cycles
+            if caller != callee
+        ]
+        deps["circular_risks"] = list(dict.fromkeys(grounded))
         data["dependencies"] = deps
         return data
