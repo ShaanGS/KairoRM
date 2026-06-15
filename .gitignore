@@ -20,6 +20,3 @@ logs/
 # OS
 .DS_Store
 
-# Demo artifact (regenerate with vhs)
-docs/demo.gif
-
