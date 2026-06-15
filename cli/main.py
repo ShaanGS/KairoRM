@@ -24,7 +24,6 @@ if sys.platform.startswith("linux"):
 
 import asyncio  # noqa: E402
 import hashlib  # noqa: E402
-import threading  # noqa: E402
 from collections import Counter  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -38,7 +37,7 @@ from cli.banner import print_banner  # noqa: E402
 from indexing import embeddings, vectorstore  # noqa: E402
 from ingestion import detector, fetcher  # noqa: E402
 from ingestion import filter as file_filter  # noqa: E402
-from output import exporter, qa_server, renderer  # noqa: E402
+from output import exporter, renderer, tui  # noqa: E402
 from parsing import ast_parser, chunker, ranker  # noqa: E402
 from synthesis import compressor, synthesizer  # noqa: E402
 
@@ -62,6 +61,11 @@ def _repo_id(source: str) -> str:
 
 def _describe(error: object) -> str:
     return str(getattr(error, "reason", error))
+
+
+def _interactive() -> bool:
+    """True when we have a real terminal to drive the TUI (False when piped / in CI)."""
+    return sys.stdout.isatty()
 
 
 class _PipelineExit(SystemExit):
@@ -159,36 +163,28 @@ async def main(source: str) -> None:
         "languages": dict(lang_counts.most_common()),
     }
 
-    # 7 — Render the report (printed after the live region closes, so tables are clean)
-    renderer.render(result, repo_name=repo_name, compressed=compressed)
-
-    # 8 — Export to disk
+    # 7 — Export to disk (markdown + JSON + compressed context).
     export_result = exporter.export(result, compressed, output_dir=OUTPUT_DIR, repo_name=repo_name)
     if not export_result.is_ok():
         _fail(f"Export failed: {_describe(export_result.error)}")
     manifest = export_result.unwrap()
-    console.print(f"[green]✓ Exported to[/] {manifest.output_dir}")
 
-    # 8 — Launch the Q&A server.
-    # uvicorn.run() calls asyncio.run() internally, which explodes if invoked from
-    # within this already-running event loop. Run it in a separate (daemon) thread —
-    # that thread has no running loop, so uvicorn can spin up its own. We join the
-    # thread so the process stays alive serving (the fake `start` in tests returns
-    # immediately, so this doesn't block there).
-    server_thread = threading.Thread(
-        target=qa_server.start,
-        kwargs={
-            "compressed": compressed,
-            "repo_name": repo_name,
-            "repo_id": repo_id,
-            "db_path": DB_PATH,
-            "result": result,
-            "stats": stats,
-        },
-        daemon=True,
-    )
-    server_thread.start()
-    server_thread.join()
+    # 8 — Drop into the interactive console (Textual TUI). When stdout isn't a TTY
+    # (piped, CI), there's no terminal to drive, so fall back to a static render so the
+    # tool still produces useful output. `run_async` runs the app on the current loop.
+    if _interactive():
+        app = tui.KairoConsole(
+            result=result,
+            stats=stats,
+            compressed=compressed,
+            repo_id=repo_id,
+            db_path=DB_PATH,
+            repo_name=repo_name,
+        )
+        await app.run_async()
+    else:
+        renderer.render(result, repo_name=repo_name, compressed=compressed)
+    console.print(f"[green]✓ Exported to[/] {manifest.output_dir}")
 
 
 @click.group()

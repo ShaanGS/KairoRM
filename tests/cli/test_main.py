@@ -29,30 +29,54 @@ from ingestion.types import (
 
 
 def _fixtures(tmp_path: Path) -> dict:
-    repo = FetchedRepo(
-        root=tmp_path, source_url="s", commit_sha=None, fetched_at=datetime.now(UTC)
-    )
+    repo = FetchedRepo(root=tmp_path, source_url="s", commit_sha=None, fetched_at=datetime.now(UTC))
     raw = RawFile(
-        path=tmp_path / "a.py", rel_path=Path("a.py"), size_bytes=10, sha256="0" * 64,
+        path=tmp_path / "a.py",
+        rel_path=Path("a.py"),
+        size_bytes=10,
+        sha256="0" * 64,
         oversized=False,
     )
     sf = SourceFile(raw=raw, language="python", parser_name="python")
     unit = CodeUnit(
-        file_path=tmp_path / "a.py", language="python", unit_type="function", name="a",
-        start_line=1, end_line=2, raw_source="def a(): pass", imports=(), calls=(), parent=None,
+        file_path=tmp_path / "a.py",
+        language="python",
+        unit_type="function",
+        name="a",
+        start_line=1,
+        end_line=2,
+        raw_source="def a(): pass",
+        imports=(),
+        calls=(),
+        parent=None,
     )
     chunk = Chunk(
-        chunk_id="id_a", file_path=tmp_path / "a.py", language="python", unit_type="function",
-        name="a", start_line=1, end_line=2, content="def a(): pass", token_count=4,
-        imports=(), calls=(), context_header="# python | function a",
+        chunk_id="id_a",
+        file_path=tmp_path / "a.py",
+        language="python",
+        unit_type="function",
+        name="a",
+        start_line=1,
+        end_line=2,
+        content="def a(): pass",
+        token_count=4,
+        imports=(),
+        calls=(),
+        context_header="# python | function a",
     )
     rchunk = RankedChunk(chunk=chunk, importance_score=0.5)
     rank_result = RankResult(chunks=[rchunk], cycles=[("id_a", "id_b")])
     embedded = EmbeddedChunk(ranked=rchunk, embedding=[0.1, 0.2])
     outputs = AgentOutputs(modules={"modules": []}, arch={}, deps={}, contributor={})
     synth = SynthesisResult(
-        repo_id="r" * 64, architecture_summary="x", modules=[], key_dependencies=[],
-        circular_risks=[], entry_points=[], contributor_quickstart=[], complexity_score=5,
+        repo_id="r" * 64,
+        architecture_summary="x",
+        modules=[],
+        key_dependencies=[],
+        circular_risks=[],
+        entry_points=[],
+        contributor_quickstart=[],
+        complexity_score=5,
         generated_at=datetime.now(UTC),
     )
     compressed = CompressedContext(content="ctx", token_count=1, truncated=False)
@@ -61,7 +85,9 @@ def _fixtures(tmp_path: Path) -> dict:
 
 
 @contextlib.contextmanager
-def _patch_pipeline(monkeypatch, fx: dict, order: list[str], *, fetch_error=None, capture=None):
+def _patch_pipeline(
+    monkeypatch, fx: dict, order: list[str], *, fetch_error=None, capture=None, interactive=True
+):
     async def fetch(*a, **k):
         order.append("fetch")
         return fetch_error if fetch_error is not None else Ok(fx["repo"])
@@ -115,8 +141,13 @@ def _patch_pipeline(monkeypatch, fx: dict, order: list[str], *, fetch_error=None
         order.append("export")
         return Ok(fx["manifest"])
 
-    def start(compressed, **k):
-        order.append("start")
+    class _FakeConsole:
+        def __init__(self, **k):
+            if capture is not None:
+                capture["tui_kwargs"] = k
+
+        async def run_async(self):
+            order.append("tui")
 
     monkeypatch.setattr(cli_main.fetcher, "fetch", fetch)
     monkeypatch.setattr(cli_main.file_filter, "walk", walk)
@@ -131,7 +162,8 @@ def _patch_pipeline(monkeypatch, fx: dict, order: list[str], *, fetch_error=None
     monkeypatch.setattr(cli_main.compressor, "compress", compress)
     monkeypatch.setattr(cli_main.renderer, "render", render)
     monkeypatch.setattr(cli_main.exporter, "export", export)
-    monkeypatch.setattr(cli_main.qa_server, "start", start)
+    monkeypatch.setattr(cli_main.tui, "KairoConsole", _FakeConsole)
+    monkeypatch.setattr(cli_main, "_interactive", lambda: interactive)
     yield
 
 
@@ -141,7 +173,7 @@ async def test_full_pipeline_completes(monkeypatch, tmp_path: Path) -> None:
     order: list[str] = []
     with _patch_pipeline(monkeypatch, fx, order):
         await cli_main.main("https://github.com/psf/requests")  # must not raise
-    assert "start" in order  # reached the final stage
+    assert "tui" in order  # reached the interactive console
 
 
 @pytest.mark.asyncio
@@ -153,12 +185,36 @@ async def test_all_stages_called_in_order(monkeypatch, tmp_path: Path) -> None:
         await cli_main.main("https://github.com/psf/requests")
 
     expected = [
-        "fetch", "walk", "detect", "parse", "chunk", "rank", "embed", "store",
-        "run_all", "synthesize", "compress", "render", "export", "start",
+        "fetch",
+        "walk",
+        "detect",
+        "parse",
+        "chunk",
+        "rank",
+        "embed",
+        "store",
+        "run_all",
+        "synthesize",
+        "compress",
+        "export",
+        "tui",
     ]
     assert order == expected
     # The permitted wiring fix: rank_result.cycles flow into the orchestrator.
     assert capture["run_all_kwargs"]["cycles"] == [("id_a", "id_b")]
+    # The console receives the full result + stats it needs to render.
+    assert capture["tui_kwargs"]["repo_id"] and "files" in capture["tui_kwargs"]["stats"]
+
+
+@pytest.mark.asyncio
+async def test_non_tty_falls_back_to_static_render(monkeypatch, tmp_path: Path) -> None:
+    fx = _fixtures(tmp_path)
+    order: list[str] = []
+    with _patch_pipeline(monkeypatch, fx, order, interactive=False):
+        await cli_main.main("https://github.com/psf/requests")
+    # No terminal → static render, never the TUI.
+    assert "render" in order
+    assert "tui" not in order
 
 
 @pytest.mark.asyncio

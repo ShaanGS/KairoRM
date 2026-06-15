@@ -150,6 +150,70 @@ async def _call_gemini(
             attempt += 1
 
 
+async def _stream_groq(system_prompt: str, user_message: str, api_key: str):
+    from groq import AsyncGroq
+
+    client = AsyncGroq(api_key=api_key)
+    stream = await client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        temperature=0.2,
+        stream=True,
+    )
+    async for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
+
+
+async def _stream_gemini(system_prompt: str, user_message: str, api_key: str):
+    import google.generativeai as genai
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=system_prompt)
+    resp = await model.generate_content_async(user_message, stream=True)
+    async for chunk in resp:
+        text = getattr(chunk, "text", None)
+        if text:
+            yield text
+
+
+async def _stream_text(agent_name: str, system_prompt: str, user_message: str):
+    """Stream a prose completion token-by-token (Groq → Gemini). Used by the TUI Q&A.
+
+    Falls back to Gemini only if Groq fails before emitting anything — once tokens are
+    flowing we don't double up by restarting on the other provider.
+    """
+    groq_key = os.environ.get("GROQ_API_KEY")
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+
+    yielded = False
+    if groq_key:
+        try:
+            async for delta in _stream_groq(system_prompt, user_message, groq_key):
+                yielded = True
+                yield delta
+            return
+        except Exception as exc:
+            if yielded:
+                return
+            console.log(f"[yellow]Groq stream failed for {agent_name} ({exc}); trying Gemini[/]")
+
+    if gemini_key:
+        try:
+            async for delta in _stream_gemini(system_prompt, user_message, gemini_key):
+                yield delta
+            return
+        except Exception as exc:
+            yield f"\n\n_Sorry — the language model is unavailable right now ({exc})._"
+            return
+
+    yield "_No LLM backend configured. Set GROQ_API_KEY or GEMINI_API_KEY._"
+
+
 async def _complete_text(
     agent_name: str, system_prompt: str, user_message: str, *, json_mode: bool = True
 ) -> Result[str, AgentError]:

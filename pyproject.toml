@@ -18,9 +18,7 @@ dependencies = [
     "chromadb>=0.5",
     "rank-bm25>=0.2.2",
     "groq>=0.11",
-    "fastapi>=0.110",
-    "uvicorn>=0.27",
-    "sse-starlette>=2.0",
+    "textual>=0.79",
     "click>=8.1",
     "python-dotenv>=1.0",
 ]
@@ -50,8 +48,6 @@ filterwarnings = [
     # upstream; the warning is expected and not actionable here.
     "ignore::FutureWarning:google.generativeai",
     "ignore:.*google.generativeai.*:FutureWarning",
-    # Starlette's TestClient warns about httpx; not actionable for our usage.
-    "ignore:.*httpx.*:DeprecationWarning",
 ]
 
 [tool.ruff]

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,18 +77,40 @@ class SynthesisError:
     reason: str
 
 
-def _module_of(path: str, repo_name: str) -> tuple[str, str]:
-    """Map a file path to its (module_name, module_path), repo-relative.
+def _repo_root(top_chunks: list[RankedChunk]) -> str:
+    """The longest common directory of all chunk paths — the root we make paths relative
+    to. Robust for local clones, temp dirs, and the fetch cache alike, unlike matching a
+    repo name that may not appear in the path at all (e.g. `/var/folders/...`)."""
+    paths = [str(rc.chunk.file_path) for rc in top_chunks]
+    if not paths:
+        return ""
+    if len(paths) == 1:
+        return str(Path(paths[0]).parent)
+    try:
+        return os.path.commonpath(paths)
+    except ValueError:  # mixed absolute/relative, or different drives
+        return ""
+
+
+def _relpath(path: str, root: str) -> str:
+    try:
+        rel = os.path.relpath(path, root) if root else path
+    except ValueError:
+        rel = path
+    return rel.replace("\\", "/")
+
+
+def _module_of(path: str, root: str) -> tuple[str, str]:
+    """Map a file path to its (module_name, module_path), relative to the repo root.
 
     A file in a subdirectory belongs to its top-level directory (`ingestion/x.py` →
     `ingestion`). A file at the repo root is its own module (`engine.py` → `engine`),
     so flat repos still produce a module map.
     """
-    rel = _normalize_path(path, repo_name)
-    segs = [s for s in rel.split("/") if s]
+    segs = [s for s in _relpath(path, root).split("/") if s and s not in (".", "..")]
     if len(segs) >= 2:
         return segs[0], segs[0]
-    leaf = segs[-1] if segs else rel
+    leaf = segs[-1] if segs else path
     return leaf.rsplit(".", 1)[0], leaf
 
 
@@ -117,7 +140,7 @@ _NONCODE_LANGS = frozenset(
 )
 
 
-def _module_inventory(top_chunks: list[RankedChunk], repo_name: str) -> list[dict]:
+def _module_inventory(top_chunks: list[RankedChunk]) -> list[dict]:
     """The authoritative module list, grounded in the real file tree.
 
     Every module that actually has code is represented exactly once — this is what stops
@@ -126,17 +149,21 @@ def _module_inventory(top_chunks: list[RankedChunk], repo_name: str) -> list[dic
     docs/config files like README.md don't masquerade as modules). Ordered by aggregate
     importance so the most central modules appear first.
     """
+    root = _repo_root(top_chunks)
     groups: dict[str, dict] = {}
     for rc in top_chunks:
-        rel = _normalize_path(str(rc.chunk.file_path), repo_name)
-        name, mpath = _module_of(str(rc.chunk.file_path), repo_name)
-        is_dir = len([s for s in rel.split("/") if s]) >= 2
+        path = str(rc.chunk.file_path)
+        name, mpath = _module_of(path, root)
+        is_dir = (
+            len([s for s in _relpath(path, root).split("/") if s and s not in (".", "..")]) >= 2
+        )
         is_code = rc.chunk.language.lower() not in _NONCODE_LANGS
+        leaf = Path(path).name
         g = groups.setdefault(
             name,
             {"name": name, "path": mpath, "files": {}, "weight": 0.0, "dir": False, "code": False},
         )
-        g["files"][Path(rel).name] = max(g["files"].get(Path(rel).name, 0.0), rc.importance_score)
+        g["files"][leaf] = max(g["files"].get(leaf, 0.0), rc.importance_score)
         g["weight"] += rc.importance_score
         g["dir"] = g["dir"] or is_dir
         g["code"] = g["code"] or is_code
@@ -149,20 +176,19 @@ def _module_inventory(top_chunks: list[RankedChunk], repo_name: str) -> list[dic
     return inventory
 
 
-def _evidence_chunks(
-    top_chunks: list[RankedChunk], repo_name: str, limit: int
-) -> list[RankedChunk]:
+def _evidence_chunks(top_chunks: list[RankedChunk], limit: int) -> list[RankedChunk]:
     """Pick evidence chunks that cover every module, then fill by importance.
 
     Taking only the global top-N starves modules whose code never reaches the top, so
     the LLM can't describe them. Seeding with the single most-important chunk per module
     guarantees every module has grounding before the remaining slots go to raw importance.
     """
+    root = _repo_root(top_chunks)
     by_importance = sorted(top_chunks, key=lambda rc: rc.importance_score, reverse=True)
     picked: list[RankedChunk] = []
     seen_modules: set[str] = set()
     for rc in by_importance:
-        mod, _ = _module_of(str(rc.chunk.file_path), repo_name)
+        mod, _ = _module_of(str(rc.chunk.file_path), root)
         if mod not in seen_modules:
             seen_modules.add(mod)
             picked.append(rc)
@@ -176,7 +202,7 @@ def _evidence_chunks(
 
 
 def _merge_and_dedupe(
-    outputs: AgentOutputs, top_chunks: list[RankedChunk], inventory: list[dict], repo_name: str
+    outputs: AgentOutputs, top_chunks: list[RankedChunk], inventory: list[dict]
 ) -> str:
     """Build the labelled, deduplicated context string sent to the LLM."""
     sections: list[tuple[str, dict]] = []
@@ -211,7 +237,7 @@ def _merge_and_dedupe(
 
     limit = max(EVIDENCE_CHUNK_LIMIT, len(inventory) + 6)
     parts.append("\n## Evidence — representative code chunks (every module covered)")
-    for rc in _evidence_chunks(top_chunks, repo_name, limit):
+    for rc in _evidence_chunks(top_chunks, limit):
         c = rc.chunk
         parts.append(
             f"- {c.file_path} :: {c.unit_type} {c.name} (importance={rc.importance_score:.4f})"
@@ -354,8 +380,8 @@ async def synthesize(
     ):
         return Err(SynthesisError(reason="all agents failed"))
 
-    inventory = _module_inventory(top_chunks, repo_name or "")
-    user_message = _merge_and_dedupe(outputs, top_chunks, inventory, repo_name or "")
+    inventory = _module_inventory(top_chunks)
+    user_message = _merge_and_dedupe(outputs, top_chunks, inventory)
 
     try:
         llm_result = await asyncio.wait_for(_call_llm(user_message), timeout=SYNTH_TIMEOUT)
