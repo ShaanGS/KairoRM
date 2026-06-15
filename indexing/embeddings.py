@@ -1,37 +1,35 @@
-"""Chunk embedding with a free-tier-first, always-falls-back strategy.
+"""Chunk embedding — local-first, with optional Gemini.
 
-Primary backend is Gemini's `gemini-embedding-001` (free tier, batched in groups of
-100). If the API key is missing or the call fails for any reason — quota, network,
-auth — we transparently fall back to a fully local `sentence-transformers` model so
-indexing never hard-fails on a missing credential. The active backend is announced
-through rich so the user always knows whether they're spending free-tier quota or
-running locally.
+Embeddings run on a local `sentence-transformers` model by default: free, offline, no
+rate limits, and the most reliable path on a fresh free-tier key (Gemini's embedding
+quota is tiny and exhausts fast, which used to throw 429 noise and risk dimension
+mismatches). Set `KAIRO_GEMINI_EMBED=1` to use Gemini embeddings instead. Whichever
+backend is chosen first is pinned for the whole run so every vector shares one space.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import warnings
 from dataclasses import dataclass
 
-from rich.console import Console
-
 from ingestion.types import EmbeddedChunk, Err, Ok, RankedChunk, Result
 
-# `text-embedding-004` 404s on the v1beta endpoint for current keys; `gemini-embedding-001`
-# is the available free-tier embedding model. Env-overridable like the chat models.
 GEMINI_MODEL = os.environ.get("KAIRO_EMBED_MODEL", "models/gemini-embedding-001")
 GEMINI_BATCH_SIZE = 100
 LOCAL_MODEL = "all-MiniLM-L6-v2"
 
 # Quiet HuggingFace/tokenizers chatter before the local model ever loads.
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-# Output to stderr so embedding logs never pollute machine-readable stdout.
-console = Console(stderr=True)
+# Warnings/status go to the kairo logfile, never the terminal (kept clean for the TUI).
+log = logging.getLogger("kairo")
 
 
 @contextlib.contextmanager
@@ -113,8 +111,9 @@ async def embed_texts(
 ) -> Result[list[list[float]], EmbedError]:
     """Embed raw strings, returning one vector per input (Gemini → local fallback).
 
-    The backend is sticky: once a run falls back to local we never re-try Gemini, and
-    once Gemini has produced vectors we never silently drop to local (which would mix
+    Local by default (reliable, no rate limits). Gemini is opt-in via KAIRO_GEMINI_EMBED=1.
+    The backend is sticky: once a run commits to local we never re-try Gemini, and once
+    Gemini has produced vectors we never silently drop to local (which would mix
     dimensions) — a later Gemini failure surfaces as an error instead.
     """
     global _backend
@@ -122,25 +121,25 @@ async def embed_texts(
         return Ok([])
 
     key = api_key or os.environ.get("GEMINI_API_KEY")
+    use_gemini = bool(key) and os.environ.get("KAIRO_GEMINI_EMBED") == "1"
 
-    if key and _backend != "local":
+    if use_gemini and _backend != "local":
         try:
             vectors = await asyncio.to_thread(_embed_gemini, texts, key)
             _backend = "gemini"
-            console.log(f"[green]Embedded {len(texts)} texts via Gemini ({GEMINI_MODEL})[/]")
+            log.info("Embedded %d texts via Gemini (%s)", len(texts), GEMINI_MODEL)
             return Ok(vectors)
         except Exception as exc:  # quota, auth, network
             if _backend == "gemini":
                 return Err(EmbedError(reason=f"Gemini embedding failed mid-run: {exc}"))
-            console.log(
-                f"[yellow]Gemini embedding failed ({exc}); "
-                f"falling back to local {LOCAL_MODEL} for the rest of this run[/]"
+            log.warning(
+                "Gemini embedding failed (%s); using local %s for this run", exc, LOCAL_MODEL
             )
 
     try:
         vectors = await asyncio.to_thread(_embed_local, texts)
         _backend = "local"
-        console.log(f"[cyan]Embedded {len(texts)} texts via local {LOCAL_MODEL}[/]")
+        log.info("Embedded %d texts via local %s", len(texts), LOCAL_MODEL)
         return Ok(vectors)
     except Exception as exc:
         return Err(EmbedError(reason=f"local embedding failed: {exc}"))

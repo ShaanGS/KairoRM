@@ -11,10 +11,9 @@ flaky LLM call.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-
-from rich.console import Console
 
 from agents.arch_agent import ArchAgent
 from agents.base import BaseAgent
@@ -24,7 +23,7 @@ from agents.module_agent import ModuleAgent
 from indexing import retriever
 from ingestion.types import AgentOutputs, Err, Ok, RankedChunk, Result
 
-console = Console(stderr=True)
+log = logging.getLogger("kairo")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,12 +47,11 @@ async def _retrieve_for(
     try:
         result = await retriever.retrieve(agent.query, repo_id=repo_id, db_path=db_path)
     except Exception as exc:
-        console.log(f"[yellow]Retrieval raised for {agent.name} ({exc}); using fallback chunks[/]")
+        log.warning("Retrieval raised for %s (%s); using fallback chunks", agent.name, exc)
         return fallback
     if not result.is_ok():
-        console.log(
-            f"[yellow]Retrieval failed for {agent.name} ({result.error.reason}); "
-            f"using fallback chunks[/]"
+        log.warning(
+            "Retrieval failed for %s (%s); using fallback chunks", agent.name, result.error.reason
         )
         return fallback
     retrieved = result.unwrap()
@@ -102,10 +100,10 @@ async def run_all(
         outputs: list[dict | None] = []
         for agent, result in zip(agents, results, strict=True):
             if isinstance(result, BaseException):
-                console.log(f"[red]Agent {agent.name} raised: {result}[/]")
+                log.warning("Agent %s raised: %s", agent.name, result)
                 outputs.append(None)
             elif not result.is_ok():
-                console.log(f"[red]Agent {agent.name} failed: {result.error.reason}[/]")
+                log.warning("Agent %s failed: %s", agent.name, result.error.reason)
                 outputs.append(None)
             else:
                 outputs.append(result.unwrap())

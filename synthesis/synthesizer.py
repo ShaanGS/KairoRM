@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-
-from rich.console import Console
 
 # Reuse the agents' LLM dispatch + JSON parsing — do not reimplement the fallback.
 from agents.base import _complete_text, _extract_json
@@ -34,7 +33,7 @@ from ingestion.types import (
 SYNTH_TIMEOUT = 45.0  # seconds — synthesis context is larger than a single agent's
 EVIDENCE_CHUNK_LIMIT = 10
 
-console = Console(stderr=True)
+log = logging.getLogger("kairo")
 
 _SYSTEM_PROMPT = (
     "You are a senior staff engineer writing the canonical overview of a codebase. "
@@ -339,7 +338,7 @@ def _build_result(
                 )
             )
         else:
-            console.log(f"[yellow]Dropping hallucinated entry-point file: {file!r}[/]")
+            log.warning("Dropping hallucinated entry-point file: %r", file)
 
     try:
         complexity = int(data.get("complexity_score", 5))

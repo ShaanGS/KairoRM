@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import random
 import re
@@ -20,7 +21,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 import tiktoken
-from rich.console import Console
 
 from ingestion.types import Err, Ok, RankedChunk, Result
 
@@ -40,7 +40,10 @@ _JSON_REMINDER = (
     "object matching the schema. No preamble, no explanation, no markdown fences."
 )
 
-console = Console(stderr=True)
+# Warnings go to the kairo logfile, never the terminal. NullHandler keeps it silent when
+# the CLI hasn't configured a file handler (tests, direct imports).
+log = logging.getLogger("kairo")
+log.addHandler(logging.NullHandler())
 
 _FENCE_RE = re.compile(r"^```[a-zA-Z]*\n|\n```$")
 
@@ -57,9 +60,8 @@ def _truncate_context(text: str, agent_name: str) -> str:
     if len(tokens) <= MAX_CONTEXT_TOKENS:
         return text
     truncated = _encoder().decode(tokens[:MAX_CONTEXT_TOKENS])
-    console.log(
-        f"[yellow]Truncated context from {len(tokens)} to "
-        f"{MAX_CONTEXT_TOKENS} tokens for {agent_name}[/]"
+    log.info(
+        "Truncated context from %d to %d tokens for %s", len(tokens), MAX_CONTEXT_TOKENS, agent_name
     )
     return truncated
 
@@ -181,11 +183,23 @@ async def _stream_gemini(system_prompt: str, user_message: str, api_key: str):
             yield text
 
 
+def _friendly_llm_error(exc: Exception) -> str:
+    """A clean, user-facing message for the TUI — never a raw traceback or quota dump."""
+    msg = str(exc).lower()
+    if any(s in msg for s in ("429", "rate limit", "quota", "exceeded", "resource_exhausted")):
+        return (
+            "_The model is rate-limited right now (free-tier limits). Wait a minute and "
+            "ask again — they usually reset quickly. A paid key avoids this entirely._"
+        )
+    return "_The language model is unavailable right now. Check your API key and connection._"
+
+
 async def _stream_text(agent_name: str, system_prompt: str, user_message: str):
     """Stream a prose completion token-by-token (Groq → Gemini). Used by the TUI Q&A.
 
-    Falls back to Gemini only if Groq fails before emitting anything — once tokens are
-    flowing we don't double up by restarting on the other provider.
+    Resilient: falls back to Gemini if Groq fails before emitting anything, retries a
+    rate-limited Gemini call once with backoff, and on total failure yields one clean
+    sentence instead of an error blob. Never double-emits once tokens are flowing.
     """
     groq_key = os.environ.get("GROQ_API_KEY")
     gemini_key = os.environ.get("GEMINI_API_KEY")
@@ -200,16 +214,27 @@ async def _stream_text(agent_name: str, system_prompt: str, user_message: str):
         except Exception as exc:
             if yielded:
                 return
-            console.log(f"[yellow]Groq stream failed for {agent_name} ({exc}); trying Gemini[/]")
+            log.warning("Groq stream failed for %s (%s); trying Gemini", agent_name, exc)
 
     if gemini_key:
-        try:
-            async for delta in _stream_gemini(system_prompt, user_message, gemini_key):
-                yield delta
-            return
-        except Exception as exc:
-            yield f"\n\n_Sorry — the language model is unavailable right now ({exc})._"
-            return
+        for attempt in range(RATE_LIMIT_MAX_RETRIES):
+            try:
+                async for delta in _stream_gemini(system_prompt, user_message, gemini_key):
+                    yielded = True
+                    yield delta
+                return
+            except Exception as exc:
+                if yielded:
+                    return
+                wait = _rate_limit_wait(exc, attempt)
+                if wait is not None and attempt + 1 < RATE_LIMIT_MAX_RETRIES:
+                    log.warning(
+                        "Gemini stream rate-limited for %s; retrying in %.1fs", agent_name, wait
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                yield _friendly_llm_error(exc)
+                return
 
     yield "_No LLM backend configured. Set GROQ_API_KEY or GEMINI_API_KEY._"
 
@@ -227,7 +252,7 @@ async def _complete_text(
         try:
             return Ok(await _call_groq(system_prompt, user_message, groq_key, json_mode=json_mode))
         except Exception as exc:  # quota, auth, network — fall through to Gemini
-            console.log(f"[yellow]Groq failed for {agent_name} ({exc}); falling back to Gemini[/]")
+            log.warning("Groq failed for %s (%s); falling back to Gemini", agent_name, exc)
 
     gemini_key = os.environ.get("GEMINI_API_KEY")
     if gemini_key:

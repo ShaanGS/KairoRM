@@ -24,6 +24,8 @@ if sys.platform.startswith("linux"):
 
 import asyncio  # noqa: E402
 import hashlib  # noqa: E402
+import logging  # noqa: E402
+import warnings  # noqa: E402
 from collections import Counter  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -69,6 +71,40 @@ def _interactive() -> bool:
     return sys.stdout.isatty()
 
 
+def _setup_logging() -> None:
+    """Send all internal warnings/status to a logfile, keeping the terminal clean.
+
+    The pipeline logs fallbacks, rate-limit retries, and dropped-path notices through the
+    `kairo` logger; routing them to `kairomap-output/kairo.log` (not stderr) means the
+    user sees only the rich progress bar and, if something fails, one red line — never a
+    wall of 429s and HuggingFace warnings.
+    """
+    logger = logging.getLogger("kairo")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    handler = logging.FileHandler(OUTPUT_DIR / "kairo.log", mode="w", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
+    logger.propagate = False
+    # Mute chatty third parties that otherwise print straight to the terminal.
+    for noisy in (
+        "httpx",
+        "httpcore",
+        "chromadb",
+        "sentence_transformers",
+        "urllib3",
+        "groq",
+        "google",
+        "grpc",
+        "huggingface_hub",
+        "transformers",
+    ):
+        logging.getLogger(noisy).setLevel(logging.ERROR)
+    # The google-generativeai SDK prints a FutureWarning on import; keep it off-screen.
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    warnings.filterwarnings("ignore", message=".*google.generativeai.*")
+
+
 class _PipelineExit(SystemExit):
     """Carries exit code 1 without surfacing a traceback to the user."""
 
@@ -84,6 +120,7 @@ async def main(source: str) -> None:
     repo_name = _repo_name(source)
     repo_id = _repo_id(source)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    _setup_logging()
 
     # One Progress instance, one task per stage. Each task has total=1 and is marked
     # completed when its stage finishes, so the spinner stops (finished_text shows a

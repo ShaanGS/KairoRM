@@ -11,9 +11,11 @@ from ingestion.types import Chunk, RankedChunk
 
 
 @pytest.fixture(autouse=True)
-def _reset_backend():
+def _reset_backend(monkeypatch):
     # The pinned backend is module-global; reset it so tests don't pollute each other.
     embeddings._backend = None
+    # Most tests here exercise the Gemini path, which is now opt-in.
+    monkeypatch.setenv("KAIRO_GEMINI_EMBED", "1")
     yield
     embeddings._backend = None
 
@@ -77,6 +79,26 @@ async def test_missing_key_falls_back_to_local(monkeypatch) -> None:
     assert len(embedded) == 2
     assert embedded[0].embedding == [1.0, 2.0, 3.0]
     gem.assert_not_called()  # never touched Gemini without a key
+
+
+@pytest.mark.asyncio
+async def test_default_is_local_even_with_key(monkeypatch) -> None:
+    # Without the opt-in flag, embeddings stay local even when a Gemini key is present.
+    monkeypatch.delenv("KAIRO_GEMINI_EMBED", raising=False)
+    chunks = [_ranked("a")]
+
+    def fake_local(texts):  # noqa: ANN001
+        return [[0.1, 0.2] for _ in texts]
+
+    with (
+        patch("google.generativeai.embed_content") as gem,
+        patch("indexing.embeddings._embed_local", side_effect=fake_local),
+    ):
+        result = await embed(chunks, api_key="fake-key")
+
+    assert result.is_ok()
+    assert result.unwrap()[0].embedding == [0.1, 0.2]
+    gem.assert_not_called()  # Gemini never touched by default
 
 
 @pytest.mark.asyncio

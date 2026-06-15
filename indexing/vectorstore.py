@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from rich.console import Console
-
 from ingestion.types import Chunk, EmbeddedChunk, Err, Ok, RankedChunk, Result
 
-console = Console(stderr=True)
+log = logging.getLogger("kairo")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,16 +76,19 @@ def _reconstruct(document: str, embedding, metadata: dict) -> EmbeddedChunk:  # 
     return EmbeddedChunk(ranked=ranked, embedding=[float(x) for x in embedding])
 
 
-def _store_sync(chunks: list[EmbeddedChunk], repo_id: str, db_path: Path) -> Result[None, StoreError]:
+def _store_sync(
+    chunks: list[EmbeddedChunk], repo_id: str, db_path: Path
+) -> Result[None, StoreError]:
     try:
         client = _client(db_path)
         name = _collection_name(repo_id)
         try:
             existing = client.get_collection(name)
             if existing.count() > 0:
-                console.log(
-                    f"[cyan]Collection for repo {repo_id[:12]}… already indexed "
-                    f"({existing.count()} chunks); skipping re-index[/]"
+                log.info(
+                    "Collection for repo %s… already indexed (%d chunks); skipping re-index",
+                    repo_id[:12],
+                    existing.count(),
                 )
                 return Ok(None)
         except Exception:
@@ -99,7 +101,7 @@ def _store_sync(chunks: list[EmbeddedChunk], repo_id: str, db_path: Path) -> Res
             documents=[ec.ranked.chunk.content for ec in chunks],
             metadatas=[_metadata(ec) for ec in chunks],
         )
-        console.log(f"[green]Indexed {len(chunks)} chunks for repo {repo_id[:12]}…[/]")
+        log.info("Indexed %d chunks for repo %s…", len(chunks), repo_id[:12])
         return Ok(None)
     except Exception as exc:
         return Err(StoreError(reason=str(exc)))
