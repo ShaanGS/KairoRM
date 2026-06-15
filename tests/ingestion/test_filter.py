@@ -71,9 +71,29 @@ async def test_minified_skipped(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_oversized_emitted_but_flagged(tmp_path: Path) -> None:
-    big = "line\n" * 300_000  # ~1.5 MB, many lines so not minified
-    (tmp_path / "big.py").write_text(big)
-    files = [f async for f in walk(_repo(tmp_path))]
-    assert len(files) == 1
-    assert files[0].oversized is True
+async def test_oversized_files_skipped(tmp_path: Path) -> None:
+    # Files over the 1MB cap are skipped before being read — a single huge file must
+    # not OOM/hang the run. (Previously emitted-but-flagged; the flag was never used.)
+    (tmp_path / "big.py").write_text("line\n" * 300_000)  # ~1.5 MB
+    (tmp_path / "small.py").write_text("x = 1\n")
+    paths = await _collect(_repo(tmp_path))
+    assert "small.py" in paths
+    assert "big.py" not in paths
+
+
+@pytest.mark.asyncio
+async def test_symlinks_are_skipped(tmp_path: Path) -> None:
+    # A hostile repo could symlink to host files to exfiltrate them; symlinks must be
+    # skipped entirely so their (off-repo) contents never reach the index or the LLM.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "host_secret.txt").write_text("SECRET")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "real.py").write_text("def f(): pass\n")
+    import os
+
+    os.symlink(outside / "host_secret.txt", repo / "leaked.txt")
+    paths = await _collect(_repo(repo))
+    assert "real.py" in paths
+    assert "leaked.txt" not in paths

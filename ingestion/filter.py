@@ -137,10 +137,18 @@ def _collect(repo: FetchedRepo) -> list[RawFile]:
     spec = _load_gitignore(repo.root)
     out: list[RawFile] = []
     for path in repo.root.rglob("*"):
-        if not path.is_file():
+        # Skip symlinks. A hostile repo can symlink to host files (~/.ssh/id_rsa,
+        # ~/.aws/credentials, /etc/passwd) to exfiltrate them into the index and the
+        # LLM prompt. `is_file()` follows links, so this check must come first.
+        if path.is_symlink() or not path.is_file():
             continue
         rel = path.relative_to(repo.root)
         if _should_skip(rel, spec):
+            continue
+        try:
+            if path.stat().st_size > OVERSIZED_BYTES:
+                continue  # skip files >1MB before reading them — DoS guard
+        except OSError:
             continue
         raw = _inspect(path, rel)
         if raw is not None:
