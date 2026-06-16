@@ -141,14 +141,6 @@ def _patch_pipeline(
         order.append("export")
         return Ok(fx["manifest"])
 
-    class _FakeConsole:
-        def __init__(self, **k):
-            if capture is not None:
-                capture["tui_kwargs"] = k
-
-        async def run_async(self):
-            order.append("tui")
-
     monkeypatch.setattr(cli_main.fetcher, "fetch", fetch)
     monkeypatch.setattr(cli_main.file_filter, "walk", walk)
     monkeypatch.setattr(cli_main.detector, "detect", detect)
@@ -162,19 +154,19 @@ def _patch_pipeline(
     monkeypatch.setattr(cli_main.compressor, "compress", compress)
     monkeypatch.setattr(cli_main.renderer, "render", render)
     monkeypatch.setattr(cli_main.exporter, "export", export)
-    monkeypatch.setattr(cli_main.tui, "KairoConsole", _FakeConsole)
     monkeypatch.setattr(cli_main, "_interactive", lambda: interactive)
-    monkeypatch.setattr(cli_main.time, "sleep", lambda _s: None)  # don't sleep in tests
     yield
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_completes(monkeypatch, tmp_path: Path) -> None:
+async def test_full_pipeline_returns_tui_kwargs(monkeypatch, tmp_path: Path) -> None:
     fx = _fixtures(tmp_path)
     order: list[str] = []
     with _patch_pipeline(monkeypatch, fx, order):
-        await cli_main.main("https://github.com/psf/requests")  # must not raise
-    assert "tui" in order  # reached the interactive console
+        tui_kwargs, out_dir = await cli_main.main("https://github.com/psf/requests")
+    # Interactive: main returns the console kwargs (the caller launches the TUI).
+    assert tui_kwargs is not None
+    assert out_dir is not None
 
 
 @pytest.mark.asyncio
@@ -183,8 +175,9 @@ async def test_all_stages_called_in_order(monkeypatch, tmp_path: Path) -> None:
     order: list[str] = []
     capture: dict = {}
     with _patch_pipeline(monkeypatch, fx, order, capture=capture):
-        await cli_main.main("https://github.com/psf/requests")
+        tui_kwargs, _ = await cli_main.main("https://github.com/psf/requests")
 
+    # main() runs the pipeline through export; the TUI is launched by the caller, not here.
     expected = [
         "fetch",
         "walk",
@@ -198,13 +191,12 @@ async def test_all_stages_called_in_order(monkeypatch, tmp_path: Path) -> None:
         "synthesize",
         "compress",
         "export",
-        "tui",
     ]
     assert order == expected
     # The permitted wiring fix: rank_result.cycles flow into the orchestrator.
     assert capture["run_all_kwargs"]["cycles"] == [("id_a", "id_b")]
-    # The console receives the full result + stats it needs to render.
-    assert capture["tui_kwargs"]["repo_id"] and "files" in capture["tui_kwargs"]["stats"]
+    # The returned kwargs carry the full result + stats the console needs.
+    assert tui_kwargs["repo_id"] and "files" in tui_kwargs["stats"]
 
 
 @pytest.mark.asyncio
@@ -212,10 +204,37 @@ async def test_non_tty_falls_back_to_static_render(monkeypatch, tmp_path: Path) 
     fx = _fixtures(tmp_path)
     order: list[str] = []
     with _patch_pipeline(monkeypatch, fx, order, interactive=False):
-        await cli_main.main("https://github.com/psf/requests")
-    # No terminal → static render, never the TUI.
+        tui_kwargs, _ = await cli_main.main("https://github.com/psf/requests")
+    # No terminal → static render, and no TUI kwargs returned.
+    assert tui_kwargs is None
     assert "render" in order
-    assert "tui" not in order
+
+
+def test_map_cmd_launches_tui_at_top_level(monkeypatch, tmp_path: Path) -> None:
+    # The actual Bug-2 path: map_cmd must call KairoConsole(...).run() after the pipeline.
+    from click.testing import CliRunner
+
+    launched: dict = {}
+
+    class _FakeConsole:
+        def __init__(self, **kwargs):
+            launched["kwargs"] = kwargs
+
+        def run(self):
+            launched["ran"] = True
+
+    async def fake_main(source):
+        return ({"repo_name": "x", "stats": {}}, tmp_path / "out")
+
+    monkeypatch.setenv("GROQ_API_KEY", "test")
+    monkeypatch.setattr(cli_main, "load_dotenv", lambda **k: None)  # don't read a real .env
+    monkeypatch.setattr(cli_main, "main", fake_main)
+    monkeypatch.setattr(cli_main.tui, "KairoConsole", _FakeConsole)
+    monkeypatch.setattr(cli_main.time, "sleep", lambda _s: None)
+
+    result = CliRunner().invoke(cli_main.cli, ["map", "https://github.com/x/y"])
+    assert result.exit_code == 0, result.output
+    assert launched.get("ran") is True  # the TUI was launched via top-level .run()
 
 
 @pytest.mark.asyncio

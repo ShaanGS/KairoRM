@@ -22,11 +22,18 @@ GEMINI_MODEL = os.environ.get("KAIRO_EMBED_MODEL", "models/gemini-embedding-001"
 GEMINI_BATCH_SIZE = 100
 LOCAL_MODEL = "all-MiniLM-L6-v2"
 
-# Quiet HuggingFace/tokenizers chatter before the local model ever loads.
+# Quiet HuggingFace/tokenizers chatter before the local model ever loads. HF_HUB_DISABLE_XET
+# stops the hf_xet Rust extension from printing its "unauthenticated requests" notice
+# straight to fd 2 (the one path our fd-redirect can race); set before any HF import.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+# Pin huggingface_hub's logger to ERROR at import — its "set a HF_TOKEN" warning is a
+# logging call that can fire before the CLI's logging config runs.
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 # Warnings/status go to the kairo logfile, never the terminal (kept clean for the TUI).
 log = logging.getLogger("kairo")

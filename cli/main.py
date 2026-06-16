@@ -117,8 +117,14 @@ def _fail(message: str) -> None:
     raise _PipelineExit(1)
 
 
-async def main(source: str) -> None:
-    """Run the full KairoRM pipeline against `source` (GitHub URL, zip, or local dir)."""
+async def main(source: str) -> tuple[dict | None, Path]:
+    """Run the full KairoRM pipeline against `source` (GitHub URL, zip, or local dir).
+
+    Returns `(tui_kwargs, output_dir)`. `tui_kwargs` is the keyword args for the
+    interactive console when stdout is a TTY, else `None` (a static report is printed
+    instead). The TUI is launched by the caller at top level — Textual's `app.run()`
+    manages its own event loop and must not be nested inside this `asyncio.run()`.
+    """
     print_banner()
     repo_name = _repo_name(source)
     repo_id = _repo_id(source)
@@ -229,29 +235,23 @@ async def main(source: str) -> None:
         _fail(f"Export failed: {_describe(export_result.error)}")
     manifest = export_result.unwrap()
 
-    # 8 — Drop into the interactive console (Textual TUI). When stdout isn't a TTY
-    # (piped, CI), there's no terminal to drive, so fall back to a static render so the
-    # tool still produces useful output. `run_async` runs the app on the current loop.
+    # The interactive console (Textual TUI) is launched by the caller, NOT here: Textual
+    # owns its own event loop via app.run(), which can't be nested inside asyncio.run().
+    # When stdout isn't a TTY (piped, CI) there's nothing to drive, so render statically.
     if _interactive():
-        # Brand splash + a beat so the jump into the full-screen TUI isn't jarring.
-        print_banner()
-        console.print(
-            f"[{ACCENT}]✓ Analysis complete — launching interactive map  "
-            f"(Ctrl+C to quit at any time)[/]"
+        return (
+            {
+                "result": result,
+                "stats": stats,
+                "compressed": compressed,
+                "repo_id": repo_id,
+                "db_path": DB_PATH,
+                "repo_name": repo_name,
+            },
+            manifest.output_dir,
         )
-        time.sleep(1.5)
-        app = tui.KairoConsole(
-            result=result,
-            stats=stats,
-            compressed=compressed,
-            repo_id=repo_id,
-            db_path=DB_PATH,
-            repo_name=repo_name,
-        )
-        await app.run_async()
-    else:
-        renderer.render(result, repo_name=repo_name, compressed=compressed)
-    console.print(f"[{ACCENT}]✓ Exported to[/] [{MUTED}]{manifest.output_dir}[/]")
+    renderer.render(result, repo_name=repo_name, compressed=compressed)
+    return None, manifest.output_dir
 
 
 @click.group()
@@ -276,9 +276,20 @@ def map_cmd(source: str) -> None:
         raise SystemExit(1)
 
     try:
-        asyncio.run(main(source))
+        tui_kwargs, output_dir = asyncio.run(main(source))
     except _PipelineExit:
         raise  # already reported on-screen; just exit 1
     except Exception as exc:  # never leak a traceback to the user
         err_console.print(f"[{HIGHLIGHT}]✗[/] [{TEXT}]Unexpected error: {exc}[/]")
         raise SystemExit(1) from None
+
+    # Launch the TUI at top level so Textual controls its own event loop (a beat first so
+    # the jump into full-screen isn't jarring). Runs only when the pipeline went TTY.
+    if tui_kwargs is not None:
+        console.print(
+            f"[{ACCENT}]✓ Analysis complete — launching interactive map  "
+            f"(Ctrl+C to quit at any time)[/]"
+        )
+        time.sleep(1.5)
+        tui.KairoConsole(**tui_kwargs).run()
+    console.print(f"[{ACCENT}]✓ Exported to[/] [{MUTED}]{output_dir}[/]")
