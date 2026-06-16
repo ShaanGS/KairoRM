@@ -1,12 +1,12 @@
 <div align="center">
 
-# KairoRM
+<img src="docs/banner.svg" alt="KairoRM — turn any repo into an interactive map you can talk to" width="100%">
 
-**A code intelligence engine that turns any repo into an interactive map you can talk to.**
+&nbsp;
 
 ![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)
-![Tests: 112 passing](https://img.shields.io/badge/tests-112%20passing-00D4AA?style=flat-square)
+![Tests: 122 passing](https://img.shields.io/badge/tests-122%20passing-7CB87A?style=flat-square)
 ![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230?style=flat-square)
 
 </div>
@@ -137,7 +137,7 @@ hotspots) are filled deterministically from the graph, not the model.
 ```bash
 pip install -e ".[dev]"
 
-make test     # run the suite (112 tests, all API/network calls mocked)
+make test     # run the suite (122 tests, all API/network calls mocked)
 make lint     # ruff check
 make fmt      # ruff format
 ```

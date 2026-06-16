@@ -1,0 +1,52 @@
+<svg width="1200" height="300" viewBox="0 0 1200 300" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="KairoRM — a code intelligence engine that turns any repo into an interactive map you can talk to">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1A1A14"/>
+      <stop offset="1" stop-color="#222218"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.45" r="0.55">
+      <stop offset="0" stop-color="#7CB87A" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#7CB87A" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- background -->
+  <rect width="1200" height="300" rx="16" fill="url(#bg)"/>
+  <rect width="1200" height="300" rx="16" fill="url(#glow)"/>
+  <rect x="0.5" y="0.5" width="1199" height="299" rx="16" stroke="#3D3D2E" stroke-width="1"/>
+
+  <!-- call-graph motif (right side): nodes ranked by PageRank, sage = central, gold = entry -->
+  <g stroke="#3D3D2E" stroke-width="1.5" opacity="0.9">
+    <line x1="900" y1="80"  x2="1010" y2="150"/>
+    <line x1="1010" y1="150" x2="930" y2="225"/>
+    <line x1="1010" y1="150" x2="1110" y2="100"/>
+    <line x1="1010" y1="150" x2="1100" y2="220"/>
+    <line x1="900" y1="80"  x2="930" y2="225"/>
+    <line x1="1110" y1="100" x2="1100" y2="220"/>
+  </g>
+  <g>
+    <circle cx="900"  cy="80"  r="9"  fill="#C4A96B"/>
+    <circle cx="1010" cy="150" r="16" fill="#7CB87A"/>
+    <circle cx="930"  cy="225" r="7"  fill="#7A7A5A"/>
+    <circle cx="1110" cy="100" r="8"  fill="#7CB87A"/>
+    <circle cx="1100" cy="220" r="6"  fill="#7A7A5A"/>
+  </g>
+
+  <!-- diamond glyph (matches the TUI '◆ KAIRORM' header) -->
+  <g transform="translate(96 132)">
+    <rect x="-17" y="-17" width="34" height="34" rx="6" transform="rotate(45)" fill="none" stroke="#7CB87A" stroke-width="3"/>
+    <rect x="-7"  y="-7"  width="14" height="14" rx="2" transform="rotate(45)" fill="#C4A96B"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="150" y="148" font-family="'SFMono-Regular', 'JetBrains Mono', Menlo, Consolas, monospace"
+        font-size="64" font-weight="700" letter-spacing="6" fill="#E8E4D0">KAIRO<tspan fill="#7CB87A">RM</tspan></text>
+
+  <!-- tagline -->
+  <text x="152" y="192" font-family="'SFMono-Regular', 'JetBrains Mono', Menlo, Consolas, monospace"
+        font-size="21" letter-spacing="0.5" fill="#C4A96B">Turn any repo into an interactive map you can talk to.</text>
+
+  <!-- sub-line / pipeline hint -->
+  <text x="152" y="224" font-family="'SFMono-Regular', 'JetBrains Mono', Menlo, Consolas, monospace"
+        font-size="14" letter-spacing="2" fill="#7A7A5A">AST  ·  PAGERANK  ·  PARALLEL AGENTS  ·  STREAMING Q&amp;A</text>
+</svg>
