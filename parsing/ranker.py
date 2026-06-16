@@ -78,6 +78,7 @@ def rank(chunks: list[Chunk]) -> RankResult:
     id_to_path = {ch.chunk_id: str(ch.file_path) for ch in chunks}
 
     g = _build_graph(chunks)
+    call_edges = list(g.edges())  # capture before _break_cycles mutates the graph
     broken = _break_cycles(g)
     cycles = [(id_to_path.get(a, a), id_to_path.get(b, b)) for a, b in broken]
 
@@ -86,7 +87,7 @@ def rank(chunks: list[Chunk]) -> RankResult:
         # consumers can still sort/rank without special-casing this.
         uniform = 1.0 / len(chunks)
         ranked = [RankedChunk(chunk=ch, importance_score=uniform) for ch in chunks]
-        return RankResult(chunks=ranked, cycles=cycles)
+        return RankResult(chunks=ranked, cycles=cycles, call_edges=call_edges)
 
     try:
         scores = nx.pagerank(g, alpha=0.85, weight="weight")
@@ -95,7 +96,6 @@ def rank(chunks: list[Chunk]) -> RankResult:
 
     fallback = 1.0 / len(chunks)
     ranked = [
-        RankedChunk(chunk=ch, importance_score=scores.get(ch.chunk_id, fallback))
-        for ch in chunks
+        RankedChunk(chunk=ch, importance_score=scores.get(ch.chunk_id, fallback)) for ch in chunks
     ]
-    return RankResult(chunks=ranked, cycles=cycles)
+    return RankResult(chunks=ranked, cycles=cycles, call_edges=call_edges)

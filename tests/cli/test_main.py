@@ -164,6 +164,7 @@ def _patch_pipeline(
     monkeypatch.setattr(cli_main.exporter, "export", export)
     monkeypatch.setattr(cli_main.tui, "KairoConsole", _FakeConsole)
     monkeypatch.setattr(cli_main, "_interactive", lambda: interactive)
+    monkeypatch.setattr(cli_main.time, "sleep", lambda _s: None)  # don't sleep in tests
     yield
 
 

@@ -25,6 +25,7 @@ if sys.platform.startswith("linux"):
 import asyncio  # noqa: E402
 import hashlib  # noqa: E402
 import logging  # noqa: E402
+import time  # noqa: E402
 import warnings  # noqa: E402
 from collections import Counter  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -202,7 +203,11 @@ async def main(source: str) -> None:
         # 6 — Synthesize + compress
         task = progress.add_task("Synthesizing…", total=1)
         synth_result = await synthesizer.synthesize(
-            outputs, rank_result.chunks, repo_id=repo_id, repo_name=repo_name
+            outputs,
+            rank_result.chunks,
+            repo_id=repo_id,
+            repo_name=repo_name,
+            call_edges=rank_result.call_edges,
         )
         if not synth_result.is_ok():
             _fail(f"Synthesis failed: {_describe(synth_result.error)}")
@@ -228,6 +233,13 @@ async def main(source: str) -> None:
     # (piped, CI), there's no terminal to drive, so fall back to a static render so the
     # tool still produces useful output. `run_async` runs the app on the current loop.
     if _interactive():
+        # Brand splash + a beat so the jump into the full-screen TUI isn't jarring.
+        print_banner()
+        console.print(
+            f"[{ACCENT}]✓ Analysis complete — launching interactive map  "
+            f"(Ctrl+C to quit at any time)[/]"
+        )
+        time.sleep(1.5)
         app = tui.KairoConsole(
             result=result,
             stats=stats,

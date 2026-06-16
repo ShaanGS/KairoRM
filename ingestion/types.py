@@ -132,6 +132,9 @@ class RankResult:
 
     chunks: list[RankedChunk]
     cycles: list[tuple[str, str]]
+    # All directed call edges as (caller_chunk_id, callee_chunk_id), captured before
+    # cycle-breaking. Downstream aggregates these to a module-level dependency graph.
+    call_edges: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +190,10 @@ class SynthesisResult:
     # Deterministic "read these files in this order" guide (entry points first, then the
     # most call-graph-central files). Defaulted so older constructions stay valid.
     reading_order: list[ReadingStep] = field(default_factory=list)
+    # Module-level dependency edges (src_module, dst_module) + a one-line plain-English
+    # description of the graph's shape. Both defaulted so older constructions stay valid.
+    module_graph: list[tuple[str, str]] = field(default_factory=list)
+    graph_summary: str = ""
 
 
 @dataclass(frozen=True, slots=True)

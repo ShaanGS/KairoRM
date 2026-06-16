@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -240,6 +241,36 @@ def _reading_order(
     return steps[:limit]
 
 
+def _module_graph(
+    top_chunks: list[RankedChunk], call_edges: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Aggregate the chunk-level call edges into module→module dependency edges.
+
+    Self-edges (within one module) are dropped; cross-module edges are deduped and
+    ordered by weight (how many calls cross that boundary) so the strongest links lead.
+    """
+    root = _repo_root(top_chunks)
+    id_to_module = {
+        rc.chunk.chunk_id: _module_of(str(rc.chunk.file_path), root)[0] for rc in top_chunks
+    }
+    weights: dict[tuple[str, str], int] = {}
+    for caller, callee in call_edges:
+        ma, mb = id_to_module.get(caller), id_to_module.get(callee)
+        if ma and mb and ma != mb:
+            weights[(ma, mb)] = weights.get((ma, mb), 0) + 1
+    return [edge for edge, _w in sorted(weights.items(), key=lambda kv: kv[1], reverse=True)]
+
+
+def _graph_summary(module_graph: list[tuple[str, str]]) -> str:
+    """One plain-English sentence describing the shape of the dependency graph."""
+    if not module_graph:
+        return "The modules are largely independent — no strong cross-module dependencies detected."
+    indegree = Counter(dst for _src, dst in module_graph)
+    hub, count = indegree.most_common(1)[0]
+    noun, verb = ("module", "depends") if count == 1 else ("modules", "depend")
+    return f"`{hub}` is the central hub — {count} {noun} {verb} on it directly."
+
+
 def _merge_and_dedupe(
     outputs: AgentOutputs, top_chunks: list[RankedChunk], inventory: list[dict]
 ) -> str:
@@ -344,6 +375,7 @@ def _build_result(
     repo_id: str,
     repo_name: str | None,
     inventory: list[dict],
+    call_edges: list[tuple[str, str]],
 ) -> SynthesisResult:
     full, names = _valid_paths(top_chunks)
     name = repo_name or ""
@@ -386,6 +418,8 @@ def _build_result(
         complexity = 5
     complexity = max(1, min(10, complexity))
     reading_order = _reading_order(top_chunks, modules, entry_points)
+    module_graph = _module_graph(top_chunks, call_edges)
+    graph_summary = _graph_summary(module_graph)
 
     return SynthesisResult(
         repo_id=repo_id,
@@ -398,6 +432,8 @@ def _build_result(
         complexity_score=complexity,
         generated_at=datetime.now(UTC),
         reading_order=reading_order,
+        module_graph=module_graph,
+        graph_summary=graph_summary,
     )
 
 
@@ -407,6 +443,7 @@ async def synthesize(
     *,
     repo_id: str,
     repo_name: str | None = None,
+    call_edges: list[tuple[str, str]] | None = None,
 ) -> Result[SynthesisResult, SynthesisError]:
     """Merge four agent reports into one grounded `SynthesisResult`.
 
@@ -432,4 +469,8 @@ async def synthesize(
     if not llm_result.is_ok():
         return Err(llm_result.error)
 
-    return Ok(_build_result(llm_result.unwrap(), top_chunks, repo_id, repo_name, inventory))
+    return Ok(
+        _build_result(
+            llm_result.unwrap(), top_chunks, repo_id, repo_name, inventory, call_edges or []
+        )
+    )

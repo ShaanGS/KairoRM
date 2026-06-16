@@ -85,13 +85,15 @@ When the scan finishes, KairoRM opens an interactive terminal console:
   grounded in the actual retrieved code, with a count of the chunks used.
 - **Keyboard-driven** — `Esc` to focus the prompt, `Ctrl+C` to quit.
 
-Every run also writes three files to `kairomap-output/<repo>/`:
+Every run also writes to `kairomap-output/<repo>/`:
 
 | File | Contains |
 | --- | --- |
-| `architecture.md` | Full human-readable analysis |
+| `architecture.md` | Full human-readable analysis, with a mermaid dependency graph at the top (renders on GitHub) |
 | `kairomap.json` | Structured analysis for programmatic use |
 | `context.txt` | Compressed context, pipeable into other tools or LLMs |
+| `architecture.mmd` | The module dependency graph as a standalone mermaid file |
+| `architecture.dot` / `.png` | GraphViz dependency graph — PNG rendered if the `graphviz` binary is installed (`brew install graphviz`), skipped silently otherwise |
 
 (When stdout isn't a TTY — piped or in CI — it prints a static report instead of the TUI.)
 

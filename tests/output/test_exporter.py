@@ -32,13 +32,23 @@ def _compressed() -> CompressedContext:
     return CompressedContext(content='{"hello": "world"}', token_count=7, truncated=False)
 
 
-def test_export_creates_three_files(tmp_path: Path) -> None:
+def test_export_creates_artifacts(tmp_path: Path) -> None:
     result = export(_result(), _compressed(), output_dir=tmp_path, repo_name="myrepo")
     assert result.is_ok()
     target = tmp_path / "myrepo"
     assert (target / "architecture.md").exists()
     assert (target / "kairomap.json").exists()
     assert (target / "context.txt").exists()
+    assert (target / "architecture.mmd").exists()  # mermaid dependency graph
+
+
+def test_mermaid_block_embedded_in_markdown(tmp_path: Path) -> None:
+    export(_result(), _compressed(), output_dir=tmp_path, repo_name="myrepo")
+    md = (tmp_path / "myrepo" / "architecture.md").read_text()
+    assert "```mermaid" in md and "flowchart TD" in md
+    mmd = (tmp_path / "myrepo" / "architecture.mmd").read_text()
+    assert mmd.startswith("flowchart TD")
+    assert "cli" in mmd  # the module appears as a node
 
 
 def test_architecture_md_has_repo_name_header(tmp_path: Path) -> None:
@@ -67,10 +77,12 @@ def test_context_txt_matches_compressed_content(tmp_path: Path) -> None:
     assert content == compressed.content
 
 
-def test_manifest_lists_three_existing_files(tmp_path: Path) -> None:
+def test_manifest_lists_existing_files(tmp_path: Path) -> None:
     result = export(_result(), _compressed(), output_dir=tmp_path, repo_name="myrepo")
     manifest = result.unwrap()
     assert isinstance(manifest, ExportManifest)
     assert manifest.repo_name == "myrepo"
-    assert len(manifest.files) == 3
+    # md + json + context + mermaid (+ .dot/.png when graphviz tooling is present).
+    assert len(manifest.files) >= 4
     assert all(p.exists() for p in manifest.files)
+    assert any(p.name == "architecture.mmd" for p in manifest.files)

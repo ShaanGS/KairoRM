@@ -19,6 +19,7 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "groq>=0.11",
     "textual>=0.79",
+    "pydot>=2.0",
     "click>=8.1",
     "python-dotenv>=1.0",
 ]

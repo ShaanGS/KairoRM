@@ -88,14 +88,17 @@ _local_model = None
 
 
 def _embed_local(texts: list[str]) -> list[list[float]]:
-    from sentence_transformers import SentenceTransformer
-
     global _local_model
-    if _local_model is None:
-        with warnings.catch_warnings(), _silence_fd_stderr():
-            warnings.simplefilter("ignore")
+    # Silence fd-2 across the whole region: the HF Hub "unauthenticated requests" notice
+    # (and progress chatter) can fire during import, a cold model download, OR the first
+    # encode — not just construction. Wrapping all three keeps the terminal clean.
+    with warnings.catch_warnings(), _silence_fd_stderr():
+        warnings.simplefilter("ignore")
+        from sentence_transformers import SentenceTransformer
+
+        if _local_model is None:
             _local_model = SentenceTransformer(LOCAL_MODEL)
-    vectors = _local_model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+        vectors = _local_model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
     return [row.tolist() for row in vectors]
 
 

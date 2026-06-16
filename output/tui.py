@@ -19,7 +19,7 @@ from textual.widgets import Footer, Input, Markdown, Static
 
 from ingestion.types import CompressedContext, SynthesisResult
 from output import qa
-from output.theme import ACCENT, MUTED, TEXT
+from output.theme import ACCENT, MUTED
 
 _SUGGESTED = (
     "What does this project do?",
@@ -38,6 +38,8 @@ def build_map_markdown(result: SynthesisResult, stats: dict) -> str:
         result.architecture_summary or "_No architecture summary._",
         "",
     ]
+    if result.graph_summary:
+        lines += [f"_{result.graph_summary}_", ""]
     if result.reading_order:
         lines.append("## ▶ Start here")
         for i, step in enumerate(result.reading_order, 1):
@@ -137,7 +139,7 @@ class KairoConsole(App):
         # Warm palette: cream brand, sage-green repo name, muted stats.
         sep = ("   ·   ", MUTED)
         header = Text.assemble(
-            ("◆ KairoRM", f"bold {TEXT}"),
+            ("◆ KAIRORM", f"bold {ACCENT}"),
             sep,
             (self._repo_name, f"bold {ACCENT}"),
             sep,
