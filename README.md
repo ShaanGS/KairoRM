@@ -25,6 +25,7 @@ The LLM writes prose; the structure is grounded in the code.
 
 - [How it works](#how-it-works)
 - [Quickstart](#quickstart)
+- [Demo](#demo)
 - [The console](#the-console)
 - [LLM backends & cost](#llm-backends--cost)
 - [Architecture](#architecture)
@@ -74,6 +75,14 @@ make run                 # analyse the current directory
 ```
 
 `kairo map` accepts a GitHub URL, a local path, or a `.zip`.
+
+## Demo
+
+![KairoRM analysing a repo and answering questions in the terminal console](docs/demo.gif)
+
+One uninterrupted run: ingest → parse → PageRank → index → parallel agents →
+synthesis, straight into the console — then a question answered with the response
+streaming in token by token, grounded in the actual code.
 
 ## The console
 
