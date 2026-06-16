@@ -112,13 +112,17 @@ def _setup_logging() -> None:
 
 
 class _PipelineExit(SystemExit):
-    """Carries exit code 1 without surfacing a traceback to the user."""
+    """Carries exit code 1 + a user-facing message, surfaced by the caller."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(1)
+        self.message = message
 
 
 def _fail(message: str) -> None:
-    # On-palette: gold mark to draw the eye, cream message — never red, never a traceback.
-    err_console.print(f"[{HIGHLIGHT}]✗[/] [{TEXT}]{message}[/]")
-    raise _PipelineExit(1)
+    # Raise (don't print here): _fail is called inside the rich Progress live region,
+    # which would clobber the line. The caller prints it once the region has closed.
+    raise _PipelineExit(message)
 
 
 def _launch_tui(tui_kwargs: dict) -> None:
@@ -300,8 +304,10 @@ def map_cmd(source: str) -> None:
 
     try:
         tui_kwargs, output_dir = asyncio.run(main(source))
-    except _PipelineExit:
-        raise  # already reported on-screen; just exit 1
+    except _PipelineExit as exc:
+        # Printed here, after the progress live region has closed, so it's actually visible.
+        err_console.print(f"[{HIGHLIGHT}]✗[/] [{TEXT}]{exc.message}[/]")
+        raise SystemExit(1) from None
     except Exception as exc:  # never leak a traceback to the user
         err_console.print(f"[{HIGHLIGHT}]✗[/] [{TEXT}]Unexpected error: {exc}[/]")
         raise SystemExit(1) from None

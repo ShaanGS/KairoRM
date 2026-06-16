@@ -456,7 +456,12 @@ async def synthesize(
         and outputs.deps is None
         and outputs.contributor is None
     ):
-        return Err(SynthesisError(reason="all agents failed"))
+        return Err(
+            SynthesisError(
+                reason="all agents failed — the LLM was unavailable (likely rate-limited or "
+                "out of daily quota). Wait for your quota to reset, or use a different API key."
+            )
+        )
 
     inventory = _module_inventory(top_chunks)
     user_message = _merge_and_dedupe(outputs, top_chunks, inventory)

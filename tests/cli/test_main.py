@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import contextlib
 from datetime import UTC, datetime
-from io import StringIO
 from pathlib import Path
 
 import pytest
-from rich.console import Console
 
 from cli import main as cli_main
 from ingestion.types import (
@@ -231,6 +229,22 @@ def test_map_cmd_launches_tui(monkeypatch, tmp_path: Path) -> None:
     assert launched.get("kwargs") == {"repo_name": "x", "stats": {}}
 
 
+def test_map_cmd_prints_error_on_pipeline_failure(monkeypatch, tmp_path: Path) -> None:
+    # A pipeline failure must surface a clear, visible message and exit 1.
+    from click.testing import CliRunner
+
+    async def failing_main(source):
+        raise cli_main._PipelineExit("the LLM was unavailable (rate-limited or out of quota)")
+
+    monkeypatch.setenv("GROQ_API_KEY", "test")
+    monkeypatch.setattr(cli_main, "load_dotenv", lambda **k: None)
+    monkeypatch.setattr(cli_main, "main", failing_main)
+
+    result = CliRunner().invoke(cli_main.cli, ["map", "https://github.com/x/y"])
+    assert result.exit_code == 1
+    assert "out of quota" in result.output
+
+
 def test_launch_tui_spawns_view_subprocess(monkeypatch, tmp_path: Path) -> None:
     # _launch_tui pickles the state and runs `python -m cli.main _view <path>`.
     calls: dict = {}
@@ -248,14 +262,13 @@ def test_launch_tui_spawns_view_subprocess(monkeypatch, tmp_path: Path) -> None:
 async def test_empty_repo_exits_gracefully(monkeypatch, tmp_path: Path) -> None:
     fx = _fixtures(tmp_path)
     order: list[str] = []
-    buf = StringIO()
-    monkeypatch.setattr(cli_main, "err_console", Console(file=buf, force_terminal=False))
     with _patch_pipeline(monkeypatch, fx, order):
         monkeypatch.setattr(cli_main.chunker, "chunk", lambda units: [])  # nothing parseable
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(cli_main._PipelineExit) as exc_info:
             await cli_main.main("https://github.com/x/y")
     assert exc_info.value.code == 1
-    assert "No source code" in buf.getvalue()
+    # Message rides on the exception (the caller prints it after the progress region closes).
+    assert "No source code" in exc_info.value.message
     # Stopped before indexing/agents — never burned an LLM call on an empty repo.
     assert "run_all" not in order
 
@@ -266,16 +279,12 @@ async def test_fetch_error_exits_code_1_without_traceback(monkeypatch, tmp_path:
     order: list[str] = []
     err = Err(InvalidSourceError(source="bad", reason="nope"))
 
-    buf = StringIO()
-    monkeypatch.setattr(cli_main, "err_console", Console(file=buf, force_terminal=False))
-
     with _patch_pipeline(monkeypatch, fx, order, fetch_error=err):
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(cli_main._PipelineExit) as exc_info:
             await cli_main.main("not-a-real-source")
 
     assert exc_info.value.code == 1
-    out = buf.getvalue()
-    assert "Fetch failed" in out
-    assert "nope" in out
+    assert "Fetch failed" in exc_info.value.message
+    assert "nope" in exc_info.value.message
     # The pipeline stopped at fetch — nothing downstream ran.
     assert order == ["fetch"]

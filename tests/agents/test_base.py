@@ -169,3 +169,16 @@ async def test_call_gemini_retries_on_429_then_succeeds() -> None:
 
     assert out == '{"ok": true}'
     assert calls["n"] == 2
+
+
+def test_rate_limit_wait_fails_fast_on_daily_quota() -> None:
+    # A per-minute burst → retry (bounded wait). A daily/TPD cap → don't retry (None),
+    # so the run fails fast instead of burning the agent timeout on doomed retries.
+    per_minute = Exception("429 rate limit reached ... please try again in 8.5s")
+    assert base._rate_limit_wait(per_minute, 0) is not None
+
+    daily = Exception(
+        "429 Rate limit reached ... tokens per day (TPD): Limit 100000, Used 98217. "
+        "Please try again in 20m18s"
+    )
+    assert base._rate_limit_wait(daily, 0) is None

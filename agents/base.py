@@ -30,6 +30,7 @@ from ingestion.types import Err, Ok, RankedChunk, Result
 GROQ_MODEL = os.environ.get("KAIRO_GROQ_MODEL", "llama-3.3-70b-versatile")
 GEMINI_MODEL = os.environ.get("KAIRO_GEMINI_MODEL", "gemini-2.5-flash")
 AGENT_TIMEOUT = 60.0  # seconds, per agent (patchable in tests); allows one 429 backoff
+GEMINI_TIMEOUT = 30.0  # client-side cap on a single Gemini request, so it can't hang
 RATE_LIMIT_MAX_RETRIES = 2  # extra Gemini attempts on a 429 before giving up
 RATE_LIMIT_MAX_WAIT = 20.0  # cap on a single backoff wait, seconds
 MAX_CONTEXT_TOKENS = 9000  # hard cap on the chunks context sent to the LLM
@@ -115,14 +116,21 @@ async def _call_groq(
 
 
 def _rate_limit_wait(exc: Exception, attempt: int) -> float | None:
-    """Seconds to wait before retrying a 429, or None if `exc` is not a rate-limit error.
+    """Seconds to wait before retrying a 429, or None if retrying is pointless.
 
-    Honours an explicit "retry in Ns" hint from the API when present (capped), otherwise
-    backs off exponentially. Jitter is added so parallel agents don't retry in lockstep
-    and immediately re-trip the per-minute limit.
+    Retries only *short, per-minute* bursts (jittered backoff so parallel agents don't
+    re-trip in lockstep). A daily/quota exhaustion ("tokens per day"/TPD, or a "try again
+    in N minutes/hours" hint) won't clear within our budget, so we DON'T retry — failing
+    fast with a clear message beats burning the agent timeout on doomed retries.
     """
     msg = str(exc).lower()
     if not any(s in msg for s in ("429", "rate limit", "quota", "exceeded", "resource_exhausted")):
+        return None
+    # Daily cap (Groq TPD, or Gemini's "...PerDayPerProject..." free-tier quota) or a
+    # minutes/hours-scale wait → won't clear within our budget, so give up immediately.
+    if any(s in msg for s in ("per day", "perday", "tpd")) or re.search(
+        r"try again in\s*\d+\s*[mh]", msg
+    ):
         return None
     hint = re.search(r"retry[^0-9]{0,16}(\d+(?:\.\d+)?)\s*s", msg)
     base = float(hint.group(1)) if hint else 2.0 * (2**attempt)
@@ -141,7 +149,9 @@ async def _call_gemini(
     while True:
         try:
             resp = await model.generate_content_async(
-                user_message, generation_config=generation_config
+                user_message,
+                generation_config=generation_config,
+                request_options={"timeout": GEMINI_TIMEOUT},
             )
             return resp.text or ""
         except Exception as exc:
@@ -176,7 +186,9 @@ async def _stream_gemini(system_prompt: str, user_message: str, api_key: str):
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=system_prompt)
-    resp = await model.generate_content_async(user_message, stream=True)
+    resp = await model.generate_content_async(
+        user_message, stream=True, request_options={"timeout": GEMINI_TIMEOUT}
+    )
     async for chunk in resp:
         text = getattr(chunk, "text", None)
         if text:

@@ -109,7 +109,7 @@ async def test_all_none_returns_error_without_llm_call() -> None:
         result = await synthesize(outputs, [_chunk("auth.py", "v")], repo_id=REPO_ID)
     assert not result.is_ok()
     assert isinstance(result.error, SynthesisError)
-    assert result.error.reason == "all agents failed"
+    assert "all agents failed" in result.error.reason
     mock.assert_not_called()
 
 
