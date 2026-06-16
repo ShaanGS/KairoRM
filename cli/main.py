@@ -42,6 +42,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn  # noqa: E402
 from agents import orchestrator  # noqa: E402
 from cli.banner import print_banner  # noqa: E402
 from indexing import embeddings, vectorstore  # noqa: E402
+from indexing.embeddings import _silence_fd_stderr  # noqa: E402
 from ingestion import detector, fetcher  # noqa: E402
 from ingestion import filter as file_filter  # noqa: E402
 from ingestion.types import RepoTooLargeError  # noqa: E402
@@ -166,7 +167,14 @@ async def main(source: str) -> tuple[dict | None, Path]:
         SpinnerColumn(style=ACCENT, finished_text=f"[{ACCENT}]✓[/]"),
         TextColumn("{task.description}", style=TEXT),
     )
-    with Progress(*progress_columns, console=console, transient=False) as progress:
+    # Silence fd 2 for the whole pipeline: huggingface_hub / chromadb / grpc print
+    # "unauthenticated requests to the HF Hub" and similar straight to stderr from native
+    # code. Our status goes to the logfile and our errors print via the caller (after this
+    # block), so nothing the user should see is lost.
+    with (
+        _silence_fd_stderr(),
+        Progress(*progress_columns, console=console, transient=False) as progress,
+    ):
         # 1 — Fetch
         task = progress.add_task("Fetching repo…", total=1)
         fetch_result = await fetcher.fetch(source, cache_dir=CACHE_DIR)
