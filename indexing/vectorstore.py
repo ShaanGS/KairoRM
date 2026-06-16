@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from indexing.embeddings import _silence_fd_stderr
 from ingestion.types import Chunk, EmbeddedChunk, Err, Ok, RankedChunk, Result
 
 log = logging.getLogger("kairo")
@@ -30,13 +31,17 @@ def _collection_name(repo_id: str) -> str:
 
 
 def _client(db_path: Path):  # noqa: ANN202 — chromadb.api.ClientAPI
-    import chromadb
-    from chromadb.config import Settings
+    # chromadb's Rust core / default ONNX embedding function can print an HF-Hub
+    # "unauthenticated requests" notice straight to fd 2 on first use; silence that fd
+    # for the duration. We always supply our own vectors, so chroma's EF is never needed.
+    with _silence_fd_stderr():
+        import chromadb
+        from chromadb.config import Settings
 
-    db_path.mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(
-        path=str(db_path), settings=Settings(anonymized_telemetry=False)
-    )
+        db_path.mkdir(parents=True, exist_ok=True)
+        return chromadb.PersistentClient(
+            path=str(db_path), settings=Settings(anonymized_telemetry=False)
+        )
 
 
 def _metadata(ec: EmbeddedChunk) -> dict:
@@ -80,28 +85,29 @@ def _store_sync(
     chunks: list[EmbeddedChunk], repo_id: str, db_path: Path
 ) -> Result[None, StoreError]:
     try:
-        client = _client(db_path)
-        name = _collection_name(repo_id)
-        try:
-            existing = client.get_collection(name)
-            if existing.count() > 0:
-                log.info(
-                    "Collection for repo %s… already indexed (%d chunks); skipping re-index",
-                    repo_id[:12],
-                    existing.count(),
+        with _silence_fd_stderr():
+            client = _client(db_path)
+            name = _collection_name(repo_id)
+            already_indexed = False
+            try:
+                existing = client.get_collection(name, embedding_function=None)
+                already_indexed = existing.count() > 0
+            except Exception:
+                pass  # collection doesn't exist yet — create it below
+            if not already_indexed:
+                # embedding_function=None: we always supply our own vectors, so chroma
+                # never needs (and never downloads) its default ONNX model from HF.
+                collection = client.get_or_create_collection(name, embedding_function=None)
+                collection.add(
+                    ids=[ec.ranked.chunk.chunk_id for ec in chunks],
+                    embeddings=[ec.embedding for ec in chunks],
+                    documents=[ec.ranked.chunk.content for ec in chunks],
+                    metadatas=[_metadata(ec) for ec in chunks],
                 )
-                return Ok(None)
-        except Exception:
-            pass  # collection doesn't exist yet — create it below
-
-        collection = client.get_or_create_collection(name)
-        collection.add(
-            ids=[ec.ranked.chunk.chunk_id for ec in chunks],
-            embeddings=[ec.embedding for ec in chunks],
-            documents=[ec.ranked.chunk.content for ec in chunks],
-            metadatas=[_metadata(ec) for ec in chunks],
-        )
-        log.info("Indexed %d chunks for repo %s…", len(chunks), repo_id[:12])
+        if already_indexed:
+            log.info("Collection for repo %s… already indexed; skipping re-index", repo_id[:12])
+        else:
+            log.info("Indexed %d chunks for repo %s…", len(chunks), repo_id[:12])
         return Ok(None)
     except Exception as exc:
         return Err(StoreError(reason=str(exc)))
@@ -109,14 +115,14 @@ def _store_sync(
 
 def _load_sync(repo_id: str, db_path: Path) -> Result[list[EmbeddedChunk], StoreError]:
     try:
-        client = _client(db_path)
-        name = _collection_name(repo_id)
-        try:
-            collection = client.get_collection(name)
-        except Exception as exc:
-            return Err(StoreError(reason=f"no collection for repo {repo_id[:12]}…: {exc}"))
-
-        data = collection.get(include=["embeddings", "documents", "metadatas"])
+        with _silence_fd_stderr():
+            client = _client(db_path)
+            name = _collection_name(repo_id)
+            try:
+                collection = client.get_collection(name, embedding_function=None)
+            except Exception as exc:
+                return Err(StoreError(reason=f"no collection for repo {repo_id[:12]}…: {exc}"))
+            data = collection.get(include=["embeddings", "documents", "metadatas"])
         ids = data.get("ids") or []
         documents = data.get("documents") or []
         embeddings = data.get("embeddings")

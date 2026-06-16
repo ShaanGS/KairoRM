@@ -23,8 +23,12 @@ if sys.platform.startswith("linux"):
     os.environ.setdefault("GRPC_POLL_STRATEGY", "epoll1")
 
 import asyncio  # noqa: E402
+import contextlib  # noqa: E402
 import hashlib  # noqa: E402
 import logging  # noqa: E402
+import pickle  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
 import time  # noqa: E402
 import warnings  # noqa: E402
 from collections import Counter  # noqa: E402
@@ -115,6 +119,25 @@ def _fail(message: str) -> None:
     # On-palette: gold mark to draw the eye, cream message — never red, never a traceback.
     err_console.print(f"[{HIGHLIGHT}]✗[/] [{TEXT}]{message}[/]")
     raise _PipelineExit(1)
+
+
+def _launch_tui(tui_kwargs: dict) -> None:
+    """Launch the interactive console in a FRESH subprocess.
+
+    The analysis pipeline imports and exercises chromadb (Rust core), grpc, httpx, and a
+    thread pool; launching Textual in the same process after all that intermittently hangs
+    before it can take over the terminal. A clean child process — which only imports those
+    libraries lazily, once a question is asked and Textual is already running — starts the
+    TUI reliably. The console state is handed over via a temporary pickle.
+    """
+    with tempfile.NamedTemporaryFile(prefix="kairo_tui_", suffix=".pkl", delete=False) as f:
+        pickle.dump(tui_kwargs, f)
+        state_path = f.name
+    try:
+        subprocess.run([sys.executable, "-m", "cli.main", "_view", state_path], check=False)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(state_path)
 
 
 async def main(source: str) -> tuple[dict | None, Path]:
@@ -283,13 +306,28 @@ def map_cmd(source: str) -> None:
         err_console.print(f"[{HIGHLIGHT}]✗[/] [{TEXT}]Unexpected error: {exc}[/]")
         raise SystemExit(1) from None
 
-    # Launch the TUI at top level so Textual controls its own event loop (a beat first so
-    # the jump into full-screen isn't jarring). Runs only when the pipeline went TTY.
+    # Launch the TUI in a clean subprocess (a beat first so the jump isn't jarring).
+    # Runs only when the pipeline ran interactively (stdout was a TTY).
     if tui_kwargs is not None:
         console.print(
             f"[{ACCENT}]✓ Analysis complete — launching interactive map  "
             f"(Ctrl+C to quit at any time)[/]"
         )
         time.sleep(1.5)
-        tui.KairoConsole(**tui_kwargs).run()
+        _launch_tui(tui_kwargs)
     console.print(f"[{ACCENT}]✓ Exported to[/] [{MUTED}]{output_dir}[/]")
+
+
+@cli.command(name="_view", hidden=True)
+@click.argument("state_path")
+def view_cmd(state_path: str) -> None:
+    """Internal: open the interactive console from a pickled state file (see _launch_tui)."""
+    # Fresh process — load keys for live Q&A, then hand off to Textual.
+    load_dotenv(dotenv_path=Path.cwd() / ".env")
+    with open(state_path, "rb") as f:
+        tui_kwargs = pickle.load(f)
+    tui.KairoConsole(**tui_kwargs).run()
+
+
+if __name__ == "__main__":  # enables `python -m cli.main` for the _view subprocess
+    cli()

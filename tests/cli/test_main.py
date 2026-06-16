@@ -210,18 +210,12 @@ async def test_non_tty_falls_back_to_static_render(monkeypatch, tmp_path: Path) 
     assert "render" in order
 
 
-def test_map_cmd_launches_tui_at_top_level(monkeypatch, tmp_path: Path) -> None:
-    # The actual Bug-2 path: map_cmd must call KairoConsole(...).run() after the pipeline.
+def test_map_cmd_launches_tui(monkeypatch, tmp_path: Path) -> None:
+    # The Bug-2 path: after the pipeline, map_cmd hands the console kwargs to _launch_tui
+    # (which runs the TUI in a clean subprocess).
     from click.testing import CliRunner
 
     launched: dict = {}
-
-    class _FakeConsole:
-        def __init__(self, **kwargs):
-            launched["kwargs"] = kwargs
-
-        def run(self):
-            launched["ran"] = True
 
     async def fake_main(source):
         return ({"repo_name": "x", "stats": {}}, tmp_path / "out")
@@ -229,12 +223,25 @@ def test_map_cmd_launches_tui_at_top_level(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("GROQ_API_KEY", "test")
     monkeypatch.setattr(cli_main, "load_dotenv", lambda **k: None)  # don't read a real .env
     monkeypatch.setattr(cli_main, "main", fake_main)
-    monkeypatch.setattr(cli_main.tui, "KairoConsole", _FakeConsole)
+    monkeypatch.setattr(cli_main, "_launch_tui", lambda kwargs: launched.update(kwargs=kwargs))
     monkeypatch.setattr(cli_main.time, "sleep", lambda _s: None)
 
     result = CliRunner().invoke(cli_main.cli, ["map", "https://github.com/x/y"])
     assert result.exit_code == 0, result.output
-    assert launched.get("ran") is True  # the TUI was launched via top-level .run()
+    assert launched.get("kwargs") == {"repo_name": "x", "stats": {}}
+
+
+def test_launch_tui_spawns_view_subprocess(monkeypatch, tmp_path: Path) -> None:
+    # _launch_tui pickles the state and runs `python -m cli.main _view <path>`.
+    calls: dict = {}
+
+    def fake_run(argv, **kwargs):
+        calls["argv"] = argv
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    cli_main._launch_tui({"repo_name": "demo"})
+    assert calls["argv"][1:3] == ["-m", "cli.main"]
+    assert calls["argv"][3] == "_view"
 
 
 @pytest.mark.asyncio
