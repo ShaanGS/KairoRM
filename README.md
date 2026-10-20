@@ -1,13 +1,12 @@
 <div align="center">
 
-<img src="docs/banner.svg" alt="KairoRM — turn any repo into an interactive map you can talk to" width="100%">
+<img src="docs/logo.svg" alt="KairoRM" width="64">
 
-&nbsp;
+# KairoRM
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
-![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)
-![Tests: 122 passing](https://img.shields.io/badge/tests-122%20passing-7CB87A?style=flat-square)
-![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-261230?style=flat-square)
+Turn any repo into an interactive map you can talk to.
+
+[Quickstart](#quickstart) · [Demo](#demo) · [The console](#the-console) · [Architecture](#architecture)
 
 </div>
 
